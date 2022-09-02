@@ -32,6 +32,7 @@ Not GitHub-related
 ------------------
 
 * GEO submission
+* Carl Sara contributed to the early RNAPII bioinfo analyses
 
 
 # EOF
