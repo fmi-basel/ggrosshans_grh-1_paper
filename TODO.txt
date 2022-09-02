@@ -28,6 +28,10 @@ Additionally
 * Luciferase Assay Analyser repos
  
 
+Not GitHub-related
+------------------
+
+* GEO submission
 
 
 # EOF
