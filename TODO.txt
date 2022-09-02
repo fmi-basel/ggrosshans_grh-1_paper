@@ -1,7 +1,10 @@
+==========
+TO DO LIST
+==========
+
 
 Things that need code in GitHub
-===============================
-
+-------------------------------
 
 * RNAPII mRNA-seq & ChIP-seq experiment:
 - processing: RNAPII to promoter counts
@@ -11,14 +14,19 @@ Things that need code in GitHub
 - analysis: corr bw RNAPII ChIP-seq & mRNA-seq
 => Fig X
 
-* Luciferase Assay Analyser repos
-
 * GRH-1 ChIP-seq
 - processing: peaks, motifs 
 => Fig X: motif, frac BS/P w/ P/BS
 - analysis: osc, then phase enrichment analysis
 => Fig X
 
+
+Additionally
+------------
+
+* Write into README
+* Luciferase Assay Analyser repos
+ 
 
 
 
