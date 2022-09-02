@@ -1,3 +1,5 @@
 .DS_Store
 Plots/
 
+.Rproj.user
+*.Rproj
