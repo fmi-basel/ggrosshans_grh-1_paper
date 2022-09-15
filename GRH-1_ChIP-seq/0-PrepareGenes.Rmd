@@ -1,0 +1,363 @@
+---
+title: "GRH-1 ChIP/RNA-seq: prepare gene regions"
+author: Milou MEEUSE, A. Alex T. SMITH
+date: 08/02/2022 - 07/02/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+
+
+<!-- ======================================================================= -->
+# Original blurb extract from Milou
+
+<!-- ----------------------------------------------------------------------- -->
+## SCRIPT DESCRIPTION
+Analysis was performed by: Milou Meeuse
+
+This code allows the user to assign the peaks identified by MACS2 to genes
+
+This script consists of the following steps: 
+  (1) load the exon data for ce10
+  (2) parse & filter it
+  (3) extract gene body and gene promoter regions
+
+Dimos notes: promoter regions are defined in varying ways, 
+eg -500 to 1000, or 0 to 2000 ... here, -500 to 0 is very strict.
+
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## INPUT
+
+- exons GR
+- gene models
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## OUTPUT
+
+- gene promoter, gene body and gene promoter+genebody annotations 
+(bed files, RData).
+
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+
+```{r}
+op <- par(no.readonly = T)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Support libraries
+This script requires the following packages to be installed:
+```{r}
+reference_genome <- "BSgenome.Celegans.UCSC.ce10"
+library(reference_genome, character.only = T)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Prepare gene-related regions
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Prepare exon data
+
+### Load exons
+```{r}
+## copy file locally (zipped!)
+fn <- "c_elegans.WS220.exons.tab"
+if (!file.exists( file.path(".","DATA",paste0(fn,".gz")) )) {
+  R.utils::gzip(
+    file.path("/work","gbioinfo","DB","WormBase","WS220",fn), 
+    destname=file.path(".","DATA",paste0(fn,".gz")), 
+  overwrite=FALSE, remove=FALSE)
+}
+
+
+## load in (quickly)
+exons <- data.table::fread(
+  file.path(".","DATA",paste0(fn,".gz")), header=T, sep='\t', data.table=F)
+
+# clean up
+rm(fn)
+```
+
+
+### Filter exons
+```{r}
+# pre-filtering
+cat("\n* Exon Biotypes:\n")
+table(exons$source)
+
+# filter MT genes
+exons <- exons[exons$chr!="chrM",] 
+cat("\n* Exon Biotypes (no MT):\n")
+table(exons$source)
+
+# filter to PC genes
+exons.keep <- 
+  (exons$source %in% c(
+    "Coding_transcript", "miRNA")) # restrict biotypes
+exons <- exons[exons.keep,]
+cat("\n* Exon Biotypes (no MT, coding/miR transcripts only):\n")
+table(exons$source)
+
+# clean up
+rm(exons.keep)
+```
+
+
+### Convert to GR
+```{r}
+exons_gr <- GRanges(
+  seqnames = exons$chr, 
+  ranges   = IRanges(start=exons$start, end=exons$end), 
+  strand   = exons$strand,
+  seqinfo  = seqinfo(get(reference_genome)) 
+)
+mcols(exons_gr)$geneID <- exons$geneID
+mcols(exons_gr)$biotype <- exons$source
+
+names(exons_gr) <- exons_gr$geneID # important for qCount & GR does not mind repeated names
+
+rm(exons)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Get gene regions & names
+
+### Gene body ranges from exons
+```{r}
+# convert from GR
+tmp <- exons_gr ; names(tmp) <- NULL # converting to data.frame fails bc of names
+tmp <- as.data.frame(tmp)[,c(
+  "seqnames", "geneID", "biotype", "strand", "start", "end")]
+colnames(tmp) <- c("chr", "WBGeneID", "biotype", "strand", "start", "end")
+
+# split up
+tmp <- split(
+  tmp,
+  tmp[,c("WBGeneID"),drop=F]
+) # a few secs
+
+# checks
+invisible(lapply(tmp, function(dat) {
+  stopifnot(length(unique( dat$chr ))==1)
+  stopifnot(length(unique( dat$biotype ))==1)
+  stopifnot(length(unique( dat$strand ))==1)
+})) # a few secs
+# => all good
+
+# break apart exon data by gene and process into one row per gene
+geneBody <- data.table::rbindlist( lapply(
+  tmp, FUN=function(df){
+  data.frame( 
+    "WBGeneID" = df[1,"WBGeneID"],
+    "start"  = min(df[,"start"], df[,"end"]), 
+    "end"    = max(df[,"end"], df[,"start"]), 
+    "chr"    = df[1,"chr"], 
+    "strand" = df[1,"strand"], 
+    "biotype" = df[1,"biotype"] )
+}) ) # <10 seconds
+geneBody <- as.data.frame(geneBody)
+rownames(geneBody) <- geneBody$WBGeneID
+
+rm(tmp)
+```
+
+
+### Load in gene names
+```{r}
+# copy annotation file from Milou, locally
+src_file <- file.path(
+  "/tungstenfs","scratch","ggrossha","meeumilo","scripts",
+  "geneAnnotation","Celegans_WS220_WBid-geneName-transcrName-type.csv")
+local_file <- file.path(
+  ".","DATA","Celegans_WS220_WBid-geneName-transcrName-type.csv")
+
+if (!file.exists(local_file))
+  file.copy(src_file, local_file)
+
+
+# read in annotation
+geneAnnot <- read.csv(
+  local_file, row.names=1)
+
+geneAnnot <- tibble::column_to_rownames(geneAnnot, "WBID")
+
+
+# subset to same biotypes as gene body data
+geneAnnot <- subset(geneAnnot, type %in% c(
+  'c("Coding_transcript", "Non_coding_transcript")',
+  'c("Non_coding_transcript", "Coding_transcript")',
+  'Coding_transcript',
+  'miRNA'
+))
+
+
+# clean up
+rm(src_file, local_file)
+```
+
+
+### Merge into previous
+```{r}
+common_genes <- intersect(rownames(geneAnnot), rownames(geneBody))
+cat("Unique genes in gene body data: ",nrow(geneBody),"\n",
+    "Unique genes in gene name data: ",nrow(geneAnnot),"\n",
+    "Unique genes in common: ",length(common_genes),"\n",sep="")
+
+geneBody[,"gene_name"] <- NA
+geneBody[,"transcript_name"] <- NA
+
+geneBody[common_genes,"gene_name"] <- 
+  geneAnnot[common_genes,"gene_name"]
+geneBody[common_genes,"transcript_name"] <- 
+  geneAnnot[common_genes,"transcript_name"]
+
+rm(geneAnnot, common_genes)
+```
+
+
+### convert to GRanges
+```{r}
+geneBody_gr <- GRanges(
+  seqnames = geneBody$chr, 
+  ranges   = IRanges(
+    start = geneBody$start, 
+    end   = geneBody$end),
+  strand   = geneBody$strand,
+  seqinfo  = seqinfo(get(reference_genome)) 
+)
+mcols(geneBody_gr) <- cbind( 
+  mcols(geneBody_gr), 
+  geneBody[,c("WBGeneID","biotype","gene_name","transcript_name")])
+names(geneBody_gr) <- mcols(geneBody_gr)$WBGeneID
+
+# clean up
+rm(geneBody)
+```
+
+
+### Check: Histogram of gene widths
+```{r fig.width=4, fig.height=6}
+thresh <- 40e3
+tmp <- width(geneBody_gr)
+par(op) ; par(mar=c(5,4,0.5,0.5))
+hist(tmp, xlab="gene width", breaks=64,
+     main="", sub=paste("#gs wider than threshold:", sum(tmp>thresh))
+)
+abline(v=thresh, lty="dashed", col="red")
+```
+
+```{r}
+wide_genes <- names(geneBody_gr)[tmp>thresh]
+print(data.frame(
+  "geneID" = wide_genes, 
+  "geneName" = geneBody_gr[wide_genes]$gene_name,
+  "trName" = geneBody_gr[wide_genes]$transcript_name,
+  "width"  = tmp[tmp>thresh]))
+rm(tmp, wide_genes, thresh)
+```
+=> 22 genes w/ widths on the genome of more than 40kb.  
+=> Looking at the genome browser, I do not believe these gene models.  
+=> We can keep these models, but let's exclude any hits that are further than 40kb from the TSS.
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Promoter ranges
+-500 to 0: quite strictly-defined promoter region.
+```{r}
+# promoter region: 500bp upstream of first exon
+geneProm_gr <- promoters(geneBody_gr, upstream=500, downstream = 0) 
+# promoters that extend beyond the chromosomes are trimmed to chromosome size:
+geneProm_gr <- trim(geneProm_gr) 
+
+
+# promoter + gene body region
+# genePromBody.gr <- punion( geneBody_gr, geneProm_gr)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Genes of interest
+Genes we'd like to look at in this project.
+```{r}
+GoIs <- c(
+  "grh1"  = "WBGene00001707",
+  "nhr23" = "WBGene00003622",
+  "nhr25" = "WBGene00003623",
+  "blmp1" = "WBGene00003847",
+  "bed3"  = "WBGene00009133",
+  "myrf1" = "WBGene00004134"  # in ce10, known as pqn-47
+)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save ranges for future reference
+
+### GRanges
+```{r}
+save( 
+  exons_gr, 
+  geneBody_gr, geneProm_gr, #genePromBody.gr,
+  GoIs,
+  file=file.path(".","RDATA","ce10_gene_regions.RData"))
+```
+
+
+### BED files
+```{r}
+out_bed_dir <- file.path(".","OUTPUT","BED")
+if (!dir.exists(out_bed_dir)) { dir.create(out_bed_dir, recursive = T) }
+
+export.bed(
+  geneBody_gr,
+  file.path(out_bed_dir, "geneBody_ce10.bed"), 'bed')
+export.bed(
+  geneProm_gr,
+  file.path(out_bed_dir, "genePromoter500_ce10.bed"), 'bed')
+# export.bed(
+#   genePromBody.gr, 
+#   file.path(out_bed_dir, "genePromoter500_geneBody_ce10.bed"), 'bed')
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->

@@ -1,0 +1,1103 @@
+---
+title: "GRH-1 ChIP-seq: look for enriched motifs"
+author: Milou MEEUSE, A. Alex T. SMITH
+date: 20/06/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+
+```{r}
+# graphics defaults
+op <- par(no.readonly = T)
+```
+
+
+
+```{css}
+.bash {
+  background-color: lightgrey;
+  font-family: "Courier New", "Lucida Console", monospace;
+  text-indent: -15px;
+  padding-left: 30px;
+}
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Support libraries
+This script requires the following packages to be installed:
+```{r}
+reference_genome <- "BSgenome.Celegans.UCSC.ce10"
+library(reference_genome, character.only = T)
+
+library(rtracklayer) 
+library(universalmotif)
+library(monaLisa)
+library(TFBSTools)
+
+library(ggplot2)
+library(gridExtra)
+
+source(file.path(".","support_GR.R"))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Load previous
+```{r}
+load( file.path(".","RDATA","2587R-2633R_peakFEs.RData"))
+rm(peaks.cnt.list) 
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Select run/sample to use moving forward
+Rep1 is our main source, but we'll compare to Rep2 to qualitatively evaluate replication.
+```{r}
+peaks_gr  <- peaks.gr.fe.list[[ "2587R_500mM:2587R_500mM" ]]
+peaks_gr2 <- peaks.gr.fe.list[[ "2633R_new:2633R_old" ]]
+rm(peaks.gr.fe.list)
+```
+
+
+
+
+
+<!-- ======================================================================= -->
+# Prepare files for HOMER analysis
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Prepare mappable regions
+
+Will need to mask the genome using this!
+
+
+### Establish mappable/unmappable regions
+
+See the script preparing the dat object here:
+```{r}
+cat(readLines(file.path(
+  "/tungstenfs","groups","gbioinfo","Appz","R","BioC",
+  "R-4.2-release-foss-2020b_BioC-3.15-release-foss-2020b",
+  "FMIRegionDB","scripts","bowtie-mappability-ce10-50mer-1hit-20210115.R")), sep="\n")
+```
+
+
+
+Set up:
+```{r}
+require(GenomicRanges)
+require(FMIRegionDB)
+require(rtracklayer)
+library(BSgenome.Celegans.UCSC.ce10)
+
+# listMappableRegions("ce10")
+
+invert_gr <- function(gr) {
+  setdiff(
+    GRanges(seqinfo(gr)),
+    gr
+  )
+}
+```
+
+Grab [UN]mappable regions:
+```{r}
+map_gr <- FMIRegionDB::getMappableRegions("ce10")
+seqinfo(map_gr) <- seqinfo(BSgenome.Celegans.UCSC.ce10)
+strand(map_gr) <- "*"
+
+unmap_gr <- invert_gr(map_gr)
+
+cat( "Percentage genome mappable: ",
+     100 * sum(width(map_gr)) / sum(width(GRanges(seqinfo(map_gr)))),
+     "% over ",length(map_gr)," segments.\n", sep="")
+cat( "Percentage genome UNmappable: ",
+     100 * sum(width(unmap_gr)) / sum(width(GRanges(seqinfo(unmap_gr)))),
+     "% over ",length(unmap_gr)," segments.\n", sep="") # sanity check!
+```
+
+
+### Simplify regions
+Remove small unmappable, then small mappable regions.
+
+Examine region width distributions:
+```{r}
+par(op) ; par(mar=c(4,4,1.5,0.5), mfrow=c(2,1))
+
+hist(log10(width(map_gr)), breaks=64, 
+     main="mappable region widths", xlab="log10(bp)")
+abline(v=log10(50), col="blue", lty="dashed", lwd=2)
+
+hist(log10(width(unmap_gr)), breaks=64,
+     main="UNmappable region widths", xlab="log10(bp)")
+abline(v=log10(50), col="blue", lty="dashed", lwd=2)
+```
+=> a few mappable segments below 10bp, most are >=50, 
+which makes sense I guess since this is mappability using 50bp reads.  
+=> however, unmappable regions have a strange distribution.
+
+Eliminate small unmappable segments & reform mappable segments,
+eliminate small mappable segments & reform unmappable segments,
+then examine width distributions again.
+```{r}
+unmap_gr <- unmap_gr[ width(unmap_gr)>10 ]
+map_gr <- invert_gr(unmap_gr)
+map_gr <- map_gr[ width(map_gr)>10 ]
+unmap_gr <- invert_gr(map_gr)
+
+par(op) ; par(mar=c(4,4,1.5,0.5), mfrow=c(2,1))
+
+hist(log10(width(map_gr)), breaks=64, 
+     main="mappable region widths", xlab="log10(bp)")
+abline(v=log10(50), col="blue", lty="dashed", lwd=2)
+
+hist(log10(width(unmap_gr)), breaks=64,
+     main="UNmappable region widths", xlab="log10(bp)")
+abline(v=log10(50), col="blue", lty="dashed", lwd=2)
+
+cat( "Percentage genome mappable: ",
+     100 * sum(width(map_gr)) / sum(width(GRanges(seqinfo(map_gr)))),
+     "% over ",length(map_gr)," segments.\n", sep="")
+cat( "Percentage genome UNmappable: ",
+     100 * sum(width(unmap_gr)) / sum(width(GRanges(seqinfo(unmap_gr)))),
+     "% over ",length(unmap_gr)," segments.\n", sep="") # sanity check!
+```
+=> Basically <0.01% of the genome has been set to mappable from unmappable,
+and we have eliminated small segments, 
+simplifying the GRanges from 76k ranges to 51k.
+
+
+### Export to BED files
+```{r}
+export.bed(
+  map_gr,
+  file.path(".","DATA","Mappable.bed.gz"))
+export.bed(
+  unmap_gr,
+  file.path(".","DATA","UnMappable.bed.gz"))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Prepare genome
+
+### Export genome FASTA file
+If necessary. Was not available in the usual location (/work/gbioinfo/DB/WormBase/WS220/) as of 20/06/2022.
+```{r}
+gen_file <- file.path("/tungstenfs","nobackup","ggrossha","smitalex","DATA","FA","ce10.genomic.fa")
+if (!file.exists(gen_file))
+  export(
+    get(reference_genome),
+    con=gen_file,
+    format="fasta")
+rm(gen_file)
+```
+
+
+### Hard mask genome 
+(takes a few seconds)
+::: {bash}
+
+module purge
+module use /tungstenfs/groups/gbioinfo/Appz/easybuild/modules/all  
+module use /tungstenfs/groups/gbioinfo/Appz/modules  
+module load BEDTools/2.27.1-foss-2018b
+
+data_dir="/tungstenfs/nobackup/ggrossha/smitalex/DATA/FA/"
+work_dir="/tungstenfs/scratch/ggrossha/smitalex/RProjects/group/GRH-1_ChIP-seq/DATA" 
+cd ${work_dir}
+
+bedtools maskfasta \
+  -fi ${data_dir}/ce10.genomic.fa \
+  -bed UnMappable.bed.gz \
+  -fo ${data_dir}/ce10.genomic.masked.fa
+
+:::
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Prepare peak files
+
+### Filter peaks to most enriched peaks
+```{r}
+hist(peaks_gr$MACS2_foldEnr, breaks=128, xlim=c(1, 6), sub=length(peaks_gr))
+print(cbind("FE"=q <- quantile(peaks_gr$MACS2_foldEnr, seq(0, 1, by=0.05))))
+
+peaks_gr_filt <- subset(peaks_gr, MACS2_foldEnr>=q["10%"])
+```
+
+```{r}
+hist(peaks_gr2$MACS2_foldEnr, breaks=128, xlim=c(1, 6), sub=length(peaks_gr2))
+print(cbind("FE"=q2 <- quantile(peaks_gr2$MACS2_foldEnr, seq(0, 1, by=0.05))))
+
+peaks_gr_filt2 <- subset(peaks_gr2, MACS2_foldEnr>=q2["10%"])
+```
+
+
+### Export most enriched peaks to BED file
+```{r}
+# export to BED file
+# note: rtracklayer::export doesn't seem to do a good job for "narrowPeak" exports
+write.table(
+  as.data.frame(peaks_gr_filt)[,c(
+    "seqnames","start","end","name","MACS2_foldEnr","strand")],
+  file.path(".","DATA", "GRH-1_ChIP_peaks_filtered.bed"), 
+  sep = "\t", row.names = F, col.names = F, quote = F
+)
+
+rm(q)
+```
+
+```{r}
+# export to BED file
+# note: rtracklayer::export doesn't seem to do a good job for "narrowPeak" exports
+write.table(
+  as.data.frame(peaks_gr_filt2)[,c(
+    "seqnames","start","end","name","MACS2_foldEnr","strand")],
+  file.path(".","DATA", "GRH-1_ChIP_peaks_filtered2.bed"), 
+  sep = "\t", row.names = F, col.names = F, quote = F
+)
+
+rm(q2)
+```
+
+
+### Sanity check: how much genome can we sample as BG?
+```{r}
+mean(width(peaks_gr_filt))
+mean(width(peaks_gr_filt2))
+# => avg peak width of about 500 for both
+
+sum(width(map_gr)) - sum(width(peaks_gr_filt))
+# => ~90M bp genome mappable & not in peak set
+
+90e6 / 500
+# => max 180k BG fragments can be used!
+```
+
+
+### Clean up
+```{r}
+rm(peaks_gr_filt, peaks_gr_filt2,
+   peaks_gr2, unmap_gr) # not used below
+```
+
+
+
+
+<!-- ======================================================================= -->
+# HOMER analysis
+
+<!-- ----------------------------------------------------------------------- -->
+## Run HOMER from the command line
+
+[EDIT Alex 19/08/2022] Now excluding unmappable regions from HOMER's bg.
+
+Note: cite HOMER:
+Heinz S, Benner C, Spann N, Bertolino E et al. Simple Combinations of Lineage-Determining Transcription Factors Prime cis-Regulatory Elements Required for Macrophage and B Cell Identities. Mol Cell 2010 May 28;38(4):576-589. PMID: 20513432
+
+
+C.F. http://homer.ucsd.edu/homer/ngs/peakMotifs.html
+
+
+::: {.bash}
+
+module purge
+module use /tungstenfs/groups/gbioinfo/Appz/easybuild/modules/all  
+module use /tungstenfs/groups/gbioinfo/Appz/modules  
+module load Homer/4.11  
+
+genome_file="/tungstenfs/nobackup/ggrossha/smitalex/DATA/FA/ce10.genomic.fa" 
+mgenome_file="/tungstenfs/nobackup/ggrossha/smitalex/DATA/FA/ce10.genomic.masked.fa" 
+proj_dir="/tungstenfs/scratch/ggrossha/smitalex/RProjects/group/GRH-1_ChIP-seq" 
+data_dir="${proj_dir}/DATA" 
+work_dir="${data_dir}/HOMER"  
+cd ${work_dir}  
+
+
+prep_dir="${work_dir}/preparsed"  
+(findMotifsGenome.pl \
+  ${data_dir}/GRH-1_ChIP_peaks_filtered.bed \
+  ${genome_file} \
+  "${work_dir}/rep1" \
+  -size given \
+  -N 180000 \
+  -preparse -preparsedDir ${prep_dir} \
+  -len 8,10,12 \
+  -nlen 3 \
+  -p 5 -S 15 ) &> ./rep1.log &
+
+(findMotifsGenome.pl \
+  ${data_dir}/GRH-1_ChIP_peaks_filtered.bed \
+  ${mgenome_file} \
+  "${work_dir}/rep1_masked" \
+  -size given \
+  -N 180000 \
+  -preparse -preparsedDir ${prep_dir} \
+  -len 8,10,12 \
+  -nlen 3 \
+  -p 5 -S 15 ) &> ./rep1_masked.log &
+
+
+prep_dir="${work_dir}/preparsed2"  
+(findMotifsGenome.pl \
+  ${data_dir}/GRH-1_ChIP_peaks_filtered2.bed \
+  ${genome_file} \
+  "${work_dir}/rep2" \
+  -size given \
+  -N 180000 \
+  -preparse -preparsedDir ${prep_dir} \
+  -len 8,10,12 \
+  -nlen 3 \
+  -p 5 -S 15 ) &> ./rep2.log &
+        
+(findMotifsGenome.pl \
+  ${data_dir}/GRH-1_ChIP_peaks_filtered2.bed \
+  ${mgenome_file} \
+  "${work_dir}/rep2_masked" \
+  -size given \
+  -N 180000 \
+  -preparse -preparsedDir ${prep_dir} \
+  -len 8,10,12 \
+  -nlen 3 \
+  -p 5 -S 15 ) &> ./rep2_masked.log &
+  
+:::
+
+
+Some option explanations:
+
+* -size given: uses the entire peak. Otherwise uses a region of width size centered on the peak center (?!).
+* -N 180000: sets the number of bg sequences to use. Default is largest of 50k or 2x nb peaks.
+NB: HOMER does not seem to mind if you sample more BG than there is available...
+* -preparse: force preparsing of background sequences (useful for me bc of many false starts).
+* -len 8,10,12: motif lengths to look for (independently).
+* -nlen 3: "autonormalisation" to remove bias of lower-order oligonucleotides.
+* -p number of parallel processes to use.
+* -S 15: max nb of de novo motifs to look at, best when a multiple of -p.
+
+
+### Observation & conclusion
+Rep2 has far less significant results, as expected of results from an experiment 
+with lower signal-to-noise ratio.
+
+Masking, surprisingly, changes nothing.
+
+We will thus proceed with the masked version, since we will be calling sites on
+the masked genome, confident that the motif itself is still identified in the same way.
+
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Import HOMER de novo motifs for use
+
+### Establish BG frequencies of masked genome
+```{r}
+cnts <- colSums(oligonucleotideFrequency( 
+  getSeq(get(reference_genome), map_gr), width = 1))
+print(freqs <- cnts / sum(cnts))
+rm(cnts)
+```
+=> Not uniform!
+
+
+### Import de novo Positional Frequency Matrices
+```{r}
+source("./monaLisa_support.R")
+
+dat_dir <- file.path(
+  ".", "DATA", "HOMER")
+
+loadMotifs <- function(dirname) {
+  pfml <- homerToPFMatrixList(
+    file.path(dat_dir, dirname, "homerMotifs.all.motifs"),
+    bg = freqs
+  )
+  names(pfml) <- name(pfml) # use motif consensus sequences (already used as IDs) as names too
+  
+  pwml <- toPWM(pfml)
+  pwml
+}
+```
+
+```{r}
+dirnames <- c(
+  "rep1",
+  "rep1_masked",
+  "rep2",
+  "rep2_masked")
+
+pwml_list <- lapply(dirnames,
+  loadMotifs)
+names(pwml_list) <- dirnames
+
+lapply(pwml_list, length)
+
+rm(dat_dir, dirnames, freqs)
+```
+
+
+### Show top 15 of each length/setup
+```{r fig.width=9, fig.height=10}
+# split by setup
+invisible(lapply( names(pwml_list), function(n1) {
+  # split by length
+  tmp <- split(pwml_list[[n1]], unlist(lapply(pwml_list[[n1]], length)) )
+  lapply(names(tmp), function(len) {
+    # split by motif
+    grid.arrange(grobs=lapply(
+      head(names(tmp[[len]]), 15), function(n2) {
+        view_motifs(
+          tmp[[len]][[n2]], use.type = "ICM") +
+        ggtitle(
+          n2, subtitle = paste0(
+          n1, " ", len, " ; p = ",
+          format(tags(tmp[[len]][[n2]])$pval, scientific=TRUE, digits=2))) + 
+        theme(
+          plot.title    = element_text(size=11),
+          plot.subtitle = element_text(size=9))
+      }), nrow=5, ncol=3)
+  })
+}))
+```
+
+
+### Select candidates
+Top candidate for each length, from each replicate.
+```{r}
+cand_pwml <- lapply(pwml_list, function(pwml) {
+  lapply(split(pwml, unlist(lapply(pwml, length))), function(pwml_len) {
+    pwml_len[[1]] })
+})
+cand_pwml <- unlist(cand_pwml)
+
+rm(pwml_list)
+```
+
+
+### Create scrambled motifs
+Using longest as originals.
+```{r}
+tmp <- cand_pwml[ c("rep1.12", "rep2.12") ]
+
+set.seed(42)
+tmp <- lapply(tmp, function(pwm) {
+  m <- Matrix(pwm)
+  Matrix(pwm) <- m[,sample(1:ncol(m))]
+  pwm@tags[["log2cut"]] <- NA
+  pwm
+})
+names(tmp) <- paste0(names(tmp), ".scramble")
+
+cand_pwml <- c(cand_pwml, tmp)
+rm(tmp)
+```
+
+
+
+### Show candidate logos
+```{r}
+invisible(lapply(names(cand_pwml), function(n) { 
+  g1 <- view_motifs(cand_pwml[[n]], use.type = "ICM") + ggtitle(n)
+  g2 <- view_motifs(cand_pwml[[n]], use.type = "PWM") + geom_hline(yintercept=0)
+  gridExtra::grid.arrange(g1, g2, nrow=2)
+  
+  ggsave(
+    filename = paste0(n, ".pdf"),
+    plot = g1,
+    path = file.path(".","OUTPUT","Logos"),
+    width=5, heigh=3.5
+  )
+}))
+```
+
+Copy favourite one for paper:
+```{r}
+file.copy(
+  file.path(".","OUTPUT","Logos","rep1.12.pdf"),  
+  file.path(".","PAPER","MotifLogo_rep1-vanilla-l12.pdf"), 
+)
+```
+
+Write matrix:
+```{r}
+m <- Matrix(cand_pwml$rep1.12)
+colnames(m) <- unlist(str_split(convert_motifs(cand_pwml$rep1.12)@consensus, ""))
+m <- cbind("BG"=cand_pwml$rep1.12@bg[rownames(m)], m)
+write.table(
+  m , file.path(".","PAPER","MotifLogo_rep1-vanilla-l12.tsv"),
+  row.names = T, col.names = T, sep="\t", quote = F
+)
+rm(m)
+```
+
+
+
+### Get score quantiles
+For future reference when selecting score thresholds.
+```{r}
+cand_scr_quantiles <- sapply(
+  cand_pwml, function(pwm) {
+    motif_score(
+      convert_motifs(pwm), 
+      threshold=c(0, 0.5, 0.8, 0.85, 0.9, 0.95, 0.99, 0.995, 1))
+})
+
+cand_scr_homer_cuts <- unlist(lapply(  
+  cand_pwml, function(pwm) {  tags(pwm)[["log2cut"]] } ))
+
+print(as.data.frame(rbind(cand_scr_quantiles, "homer"=cand_scr_homer_cuts)))
+
+matplot(
+  as.numeric(str_replace(rownames(cand_scr_quantiles), "%", "")),
+  cand_scr_quantiles, 
+  xlab="percentile", ylab="score",
+  type="b", pch=19, cex=0.25, col = alpha(1:6, 0.5) )
+legend("topleft", leg=colnames(cand_scr_quantiles), lty = 1:5, col = alpha(1:6, 0.5), cex = 0.65)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Find motif hits genome-wide
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Sanity check: which chromosomes?
+```{r}
+print(tab <- table(seqnames(peaks_gr)) )
+```
+=> We should look at all chromosomes except chrM.
+
+
+```{r}
+ok_chr <- names(tab)[ tab>1 ]
+rm(tab)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Iterate across candidates
+Use a lenient threshold, so we can explore thresholding.  
+NB: as monaLisa returns hits in a GRanges object with seqnames matching
+to the NAMES of the subject GRanges, one must scan a genome-representing
+GRanges object and then overlap, to avoid faffing around trying to swap out
+the subject range names for proper chromosome names later T_T.
+```{r}
+genome_gr <- GRanges(seqinfo( get(reference_genome) ))
+genome_gr <- genome_gr[ seqnames(genome_gr) %in% ok_chr ]
+
+min_score <- 6
+
+motif_hits_list <- list()
+for (n in names(cand_pwml)) {
+  print(system.time({
+    
+    motif_hits <- findMotifHits(
+      query = cand_pwml[[n]],
+      subject = genome_gr,
+      min.score = min_score,
+      method = "matchPWM",
+      BPPARAM = BiocParallel::MulticoreParam(16),
+      genome = get(reference_genome)
+    )
+    seqinfo(motif_hits) <- seqinfo(get(reference_genome))
+    
+    motif_hits <- motif_hits[ motif_hits %over% map_gr ] # drop unmappable sites
+    names(motif_hits) <- paste0(n, "_", 1:length(motif_hits))
+    motif_hits_list[[n]] <- motif_hits
+    
+  })) # <10s per motif
+}
+rm(min_score, n, motif_hits)
+```
+
+```{r}
+print(motif_hits_list)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Profile around binding sites
+
+### Grab BS regions
+Score threshold: 90% of max score.
+200bp windows centered on BSs.
+```{r}
+scr_threshold <- "90%"
+investigate_BSs_grl <- lapply(names(motif_hits_list), function (sel_motif_name) {
+
+  investigate_BSs_gr <- subset(
+    motif_hits_list[[sel_motif_name]], 
+    score>=cand_scr_quantiles[scr_threshold,sel_motif_name])
+  
+  # extend investigate_BSs_gr by 100bp in *both* directions
+  investigate_BSs_gr <- investigate_BSs_gr + 100
+  investigate_BSs_gr
+})
+names(investigate_BSs_grl) <- names(motif_hits_list)
+```
+
+
+### Nucleotide frequency profile around BSs
+Reminder: CF EnrichedTiles script: genome-wide average (across 500nt tiles) %GC is 35.44%.
+```{r fig.width=5, fig.height=3}
+for (sel_motif_name in names(investigate_BSs_grl)) {
+  par(op) ; par(mar=c(5,4,2.5,0.25))
+  freqtab <- nt_table_profile(
+    investigate_BSs_grl[[sel_motif_name]],
+    paste0(sel_motif_name, " (",scr_threshold,")"),
+    genome=get(reference_genome))
+  legend("topleft", leg=paste0(
+    "local %GC=",round(avg_GC_outside_BS(freqtab), 2)) )
+} # a few seconds for each motif
+rm(sel_motif_name, freqtab)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Integrate motif occurrences and peaks
+
+<!-- NOTE: could just establish CPDs once and for
+all rather than recalc each time -->
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Profile around binding sites, split by peak/no peak
+
+Nucleotide frequency profile around BSs, split by in peak / no peak
+```{r fig.width=5, fig.height=3.5}
+for (sel_motif_name in names(investigate_BSs_grl)) {
+  
+  investigate_BSs_gr <- investigate_BSs_grl[[sel_motif_name]]
+  
+  # same, splitting bw BS w/in peaks and BS outside peaks
+  o <- findOverlaps(
+    investigate_BSs_gr, 
+    peaks_gr
+  )
+  investigate_BSs_gr_inP <- investigate_BSs_gr[unique(queryHits(o))]
+  investigate_BSs_gr_noP <- investigate_BSs_gr[
+    ! 1:length(investigate_BSs_gr) %in% unique(queryHits(o))]
+  names(investigate_BSs_gr_noP) <- paste0("noP_BS", 1:length(investigate_BSs_gr_noP))
+  
+  par(op) ; par(mar=c(5,4,2.5,0.25)) 
+  layout( matrix(c(1,2,3,3), nrow=2, ncol=2, byrow = F), widths=c(3,1) )
+  
+  inP <- nt_table_profile(
+    investigate_BSs_gr_inP, paste0(sel_motif_name," (",scr_threshold,") in peak"), 
+    genome=get(reference_genome))
+  legend("topleft", leg=paste0(
+    "local %GC=",round(avg_GC_outside_BS(inP), 2)) )
+  noP <- nt_table_profile(
+    investigate_BSs_gr_noP, paste0(sel_motif_name," (",scr_threshold,") no peak"),
+    genome=get(reference_genome))
+  legend("topleft", leg=paste0(
+    "local %GC=",round(avg_GC_outside_BS(noP), 2)) )
+
+  boxplot(list(
+    "inP"=investigate_BSs_gr_inP$score,
+    "noP"=investigate_BSs_gr_noP$score),
+    ylab="score")
+} 
+rm(sel_motif_name, investigate_BSs_gr, o, 
+   investigate_BSs_gr_inP, investigate_BSs_gr_noP,
+   inP, noP)
+```
+
+=> There's a clear bias towards slightly (~2%) higher %GC around BSs 
+that are in peaks, compared to BSs that are outside peaks. This holds for scrambled motifs.  
+=> Score tend to be higher in peaks (reminder: we already thresholded to 90% max here) than
+outside. This does NOT hold for scrambled motifs.
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Compare peaks w/ and w/o BSs
+
+```{r}
+peaks_gr_BSl <- list()
+for (sel_motif_name in names(investigate_BSs_grl)) {
+  
+  investigate_BSs_gr <- investigate_BSs_grl[[sel_motif_name]]
+  
+  # find overlaps
+  o <- findOverlaps(
+    investigate_BSs_gr, 
+    peaks_gr
+  )
+  
+  # count BSs per peak
+  tab <- table( factor(names(peaks_gr)[to(o)], levels=names(peaks_gr)) )
+  
+  # add info to GR
+  peaks_gr_BSl[[sel_motif_name]] <- list(
+    "all" = peaks_gr
+  )
+  peaks_gr_BSl[[sel_motif_name]][["all"]]$nbBS <- unname(tab[names(peaks_gr)])
+  
+  # get peak subsets
+  peaks_gr_BSl[[sel_motif_name]][["wBS"]]  <- 
+    peaks_gr_BSl[[sel_motif_name]][["all"]][unique(to(o))]
+  peaks_gr_BSl[[sel_motif_name]][["noBS"]] <- 
+    peaks_gr_BSl[[sel_motif_name]][["all"]][setdiff(1:length(peaks_gr), to(o))]
+  
+}
+
+rm(sel_motif_name, tab)
+```
+
+
+### Nb BS per peak
+```{r}
+for (sel_motif_name in names(peaks_gr_BSl)) {
+  cat("\n---------------------------------\n",
+      "Cnts of nbBS per peaks for", sel_motif_name, ":\n")
+  tab <- table(factor(peaks_gr_BSl[[sel_motif_name]][["all"]]$nbBS))
+  print(tab)
+}
+
+rm(sel_motif_name, tab)
+```
+=> Some peaks have many motifs!!!
+
+```{r fig.width=3, fig.height=4}
+max_nbBS <- 10
+
+par(op) ; par(mar=c(5,4,2.5,0.5), mfrow=c(3,1))
+for (sel_motif_name in names(peaks_gr_BSl)) {
+  tab <- table(factor(peaks_gr_BSl[[sel_motif_name]][["all"]]$nbBS, levels=0:max_nbBS), useNA="always")
+  if (any(is.na(names(tab)))) names(tab)[is.na(names(tab))] <- paste0(max_nbBS+1, "+")
+  barplot(
+    tab,
+    xlab="nb BS", ylab="nb peaks", 
+    main=paste0(sel_motif_name, " (",scr_threshold,")\n", "nb BS per peak") ,
+    sub=paste0( length(peaks_gr_BSl[[sel_motif_name]][["all"]]) ))
+}
+
+rm(max_nbBS, sel_motif_name, tab)
+```
+=> Most motifs have peaks with a great number of motif hits. 
+There seems to be an enrichment in peaks w/ 2 compared to other counts. 
+[EDIT from the future self co-binding analysis] I interpret this latter pt as the 
+motif being able to easily hit on the opposite strand w/ a decal of 1NT.
+
+
+### FE for peaks w/ and w/o BS
+```{r fig.width=4, fig.height=4}
+par(op) ; par(mar=c(5,4,2.5,0.5), mfrow=c(1,3))
+for (sel_motif_name in names(peaks_gr_BSl)) {
+  boxplot(list(
+    "p_wBS"  = peaks_gr_BSl[[sel_motif_name]][["wBS"]]$MACS2_foldEnr,
+    "p_noBS" = peaks_gr_BSl[[sel_motif_name]][["noBS"]]$MACS2_foldEnr),
+    notch=T, ylab="FE",    
+    main=paste0(sel_motif_name, " (",scr_threshold,")\n", "MACS2 FE") ,
+    sub=paste0( length(peaks_gr_BSl[[sel_motif_name]][["wBS"]]), " | ", 
+                length(peaks_gr_BSl[[sel_motif_name]][["noBS"]]) ))
+}
+
+rm(sel_motif_name)
+```
+=> FEs tend to be higher for peaks w/ BSs.  
+The difference is more marked for non-scrambled motifs.
+
+
+### Peak widths for peaks w/ and w/o BS
+```{r fig.width=4, fig.height=4}
+par(op) ; par(mar=c(5,4,2.5,0.5), mfrow=c(1,3))
+for (sel_motif_name in names(peaks_gr_BSl)) {
+  boxplot(list(
+    "p_wBS"  = width(peaks_gr_BSl[[sel_motif_name]][["wBS"]]),
+    "p_noBS" = width(peaks_gr_BSl[[sel_motif_name]][["noBS"]])),
+    ylim=c(200, 3000), # zoom in a bit! 
+    notch=T, ylab="width (nt)",    
+    main=paste0(sel_motif_name, " (",scr_threshold,")\n", "MACS2 FE") ,
+    sub=paste0( length(peaks_gr_BSl[[sel_motif_name]][["wBS"]]), " | ", 
+                length(peaks_gr_BSl[[sel_motif_name]][["noBS"]]) ))
+}
+
+rm(sel_motif_name)
+```
+=> Peaks w/ BSs seem to be wider, regardless of motif. Makes sense: the wider the 
+peak, the more chance to find a motif hit in it, functional or just by random chance!
+
+
+### Compare FE to nb BS
+```{r fig.width=4, fig.height=4}
+par(op) ; par(mar=c(4,4,1.5,0.5), mfrow=c(3,1))
+for (sel_motif_name in names(peaks_gr_BSl)) {
+  plot(
+    peaks_gr_BSl[[sel_motif_name]][["all"]]$MACS2_foldEnr,
+    peaks_gr_BSl[[sel_motif_name]][["all"]]$nbBS, 
+    xlab="FE", ylab="nb BS",
+    main=paste0(sel_motif_name, " (",scr_threshold,")") 
+  )
+  a <- pretty( peaks_gr_BSl[[sel_motif_name]][["all"]]$nbBS )
+  axis(2, at=a, labels = a)
+}
+
+rm(sel_motif_name, a)
+```
+
+
+### Clean up
+```{r}
+rm(peaks_gr_BSl)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Directional BS - peak fractions
+
+### Calculate fractions for various thresholds
+
+Helper:
+```{r}
+all_overlaps_list <- lapply( motif_hits_list, function(motif_hits) {
+  o <- findOverlaps(
+    motif_hits, 
+    peaks_gr
+  )
+  mcols(o)$motifID <- names(motif_hits)[ from(o)]
+  mcols(o)$peakID  <- names(peaks_gr)[   to(o)]
+  o
+} )
+
+get_fracts <- function(motif_name, motif_scr_thresh, FE_thresh) {
+  
+  target_BSs <- names(motif_hits_list[[motif_name]])[
+    motif_hits_list[[motif_name]]$score >= motif_scr_thresh]
+  
+  target_peaks <- names(peaks_gr)[
+    peaks_gr$MACS2_foldEnr >= FE_thresh]
+  
+  if (length(target_BSs)<=0 | length(target_peaks)<=0)
+    return(c(
+      "motif_scr_thresh" = motif_scr_thresh,
+      "FE_thresh"        = FE_thresh,
+      "n_BS"    = length(target_BSs),
+      "n_P"     = length(target_peaks),
+      "n_CPDs"  = 0,
+      rep(NA, 2)) )
+  
+  
+  o <- all_overlaps_list[[motif_name]]
+  o <- subset(
+    o,
+    (mcols(o)$motifID %in% target_BSs) &
+      (mcols(o)$peakID %in% target_peaks)
+  )
+  
+  return(c(
+    "motif_scr_thresh" = motif_scr_thresh,
+    "FE_thresh"        = FE_thresh,
+    
+    "n_BS"    = length(target_BSs),
+    "n_P"     = length(target_peaks),
+    "n_CPDs"  = length(o),
+    
+    "frac_BS_w_P" = length(unique(from(o))) / length(target_BSs),
+    "frac_P_w_BS" = length(unique(to(o))) / length(target_peaks)
+  ))
+}
+```
+
+Iterate over thresholds:
+(NB: using empiric quantiles, not predicted score quantiles, just because?)
+```{r}
+library(foreach)
+library(doParallel)
+
+registerDoParallel(10)
+
+print(system.time({
+  res_list <- foreach(sel_motif_name = names(motif_hits_list)) %dopar% {
+    res <- list()
+    for (sT in quantile(motif_hits_list[[sel_motif_name]]$score, probs=seq(0, 1, by=0.025))) {
+      for (FET in quantile(peaks_gr$MACS2_foldEnr, probs=seq(0, 1, by=0.025))) {
+        res[[length(res)+1]] <-
+          get_fracts(sel_motif_name, sT, FET)
+      }
+    }
+   as.data.frame(do.call(rbind, res))
+  } # might take 1.5min
+}))
+names(res_list) <- names(motif_hits_list)
+
+stopImplicitCluster()
+```
+
+
+### Make plots
+```{r fig.width=8, fig.height=3.5}
+keep_l <- NULL
+for (sel_motif_name in names(res_list)) {
+  
+  g1 <- ggplot(res_list[[sel_motif_name]], aes_string(x="motif_scr_thresh", y="frac_BS_w_P")) +
+    ylim( range(unlist(lapply(res_list, "[[", "frac_BS_w_P")), 1) ) +
+    geom_hline(yintercept = c(0,1)) +
+    geom_point(color="grey30", size=0.65) +
+    geom_path(aes_string(color="FE_thresh", group="FE_thresh")) +
+    scale_color_gradientn(colors=c("black", "blue", "purple", "red")) +
+    ggtitle(paste0(sel_motif_name) )
+  
+  g2 <- ggplot(res_list[[sel_motif_name]], aes_string(x="motif_scr_thresh", y="frac_P_w_BS")) +
+    ylim( range(unlist(lapply(res_list, "[[", "frac_P_w_BS")), 1) ) +
+    geom_hline(yintercept = c(0,1)) +
+    geom_point(color="grey30", size=0.65)  +
+    geom_path(aes_string(color="FE_thresh", group="FE_thresh"))+
+    scale_color_gradientn(colors=c("black", "blue", "purple", "red"))+
+    ggtitle(paste0(sel_motif_name) )
+  
+  if (!is.na(cand_scr_homer_cuts[sel_motif_name])) {
+    g1 <- g1 + geom_vline(xintercept = cand_scr_homer_cuts[sel_motif_name],
+                          linetype="dashed", col="magenta")
+    g2 <- g2 + geom_vline(xintercept = cand_scr_homer_cuts[sel_motif_name],
+                          linetype="dashed", col="magenta")
+  }
+  
+  grid.arrange(g1, g2, ncol=2)
+  
+  if (sel_motif_name=="rep1.12")
+    keep_l <- list("g1"=g1, "g2"=g2, dat=res_list[[sel_motif_name]])
+}
+rm(sel_motif_name, g1, g2)
+```
+
+
+Clean up:
+```{r}
+pdf(file.path(".","PAPER","QC_peak-site-agreement.PDF"),
+    width=7, height=3.5)
+grid.arrange(grobs=keep_l[c("g1","g2")], ncol=2)
+dev.off()
+
+write.table(
+  keep_l$dat, file = file.path(".","PAPER","QC_peak-site-agreement.tsv"), 
+  sep = "\t", row.names = F, col.names = T, quote = F
+)
+
+rm(keep_l)
+```
+
+
+### 2D density test for selected motif
+```{r fig.width=8, fig.height=6}
+sel_motif_name <-  names(res_list)[3]
+tmp <- res_list[[sel_motif_name]]
+tmp$prod <- tmp$frac_BS_w_P * tmp$frac_P_w_BS
+tmp$sum  <- scales::rescale(tmp$frac_BS_w_P, to=c(0,1)) + scales::rescale(tmp$frac_P_w_BS, to=c(0,1))
+grobs <- list()
+for (vn in c("frac_BS_w_P", "frac_P_w_BS", "prod", "sum")) {
+  grobs[[length(grobs)+1]] <- ggplot( tmp, 
+          aes_string(x="motif_scr_thresh", y="FE_thresh", z=vn)) +
+    geom_contour_filled() +
+    ggtitle(vn)
+}
+grid.arrange(grobs=grobs, ncol=2, nrow=2)
+rm(sel_motif_name, tmp, grobs, vn)
+```
+
+
+### Clean up
+```{r}
+# rm(res_list)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Overall conclusion
+The r1 motifs seem quite redundant, though not equivalent, with longer motifs
+seeming to agree more with the peak data. The r2 motifs are very similar to
+the r1 motifs; there seems to be no particular reason to work with them
+compared to the r1s. The scrambled motifs are quite distinct, and show slightly
+different local sequence composition biases, but little to no agreement with peak data. 
+As for the main motifs, we will keep the r1 srambled motif only.
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save selected motif for further use
+```{r}
+save_motif <- function( motif_ID, motif_filename ) {
+  stopifnot(motif_ID %in% names(cand_pwml))
+  cat("Saving", motif_ID, "as",motif_filename,"for further work.\n")
+  
+  GRH1_pwm <- cand_pwml[[motif_ID]]
+  GRH1_motif_hits <- motif_hits_list[[motif_ID]]
+  GRH1_score_quantiles <- cand_scr_quantiles[,motif_ID]
+  
+  save(GRH1_pwm, GRH1_motif_hits, GRH1_score_quantiles,
+       file=file.path(
+         ".","RDATA",paste0("GRH1_motif_",motif_filename,".RData")))
+}
+```
+
+```{r}
+# print(names(cand_pwml))
+save_motif( names(cand_pwml)[2], "medium" )
+save_motif( names(cand_pwml)[3], "long" )
+save_motif( names(cand_pwml)[6], "long_mskd" )
+save_motif( names(cand_pwml)[13], "scramble" )
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Export hits to BED files
+
+```{r}
+for (sel_motif_name in names(cand_pwml)) {
+  cat("Writing BED file for",sel_motif_name,"\n")
+  tmp_gr <- motif_hits_list[[sel_motif_name]]
+  # tmp_gr <- tmp_gr[ tmp_gr$score>=10 ] # higher threshold
+  export.bed(
+    tmp_gr, 
+    file.path(".","OUTPUT", "BED", paste0(sel_motif_name,".bed.gz"))
+  )
+}
+
+rm(sel_motif_name)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->

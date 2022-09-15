@@ -1,0 +1,560 @@
+---
+title: "GRH-1 ChIP-seq: Enriched Tiles"
+author: Milou MEEUSE, A. Alex T. SMITH
+date: 18/01/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+
+
+<!-- ======================================================================= -->
+# Original blurb from Milou
+
+Determine enriched tiles 
+
+
+<!-- ----------------------------------------------------------------------- -->
+## SCRIPT DESCRIPTION
+Analysis was performed by: Milou Meeuse
+
+This code allows the user to process the ChIP-seq reads
+
+This script consists of the following steps: 
+  (1) Prepare normalized read counts in tiles
+  (2) Make selection of enriched tiles
+  (3) investigate genome accessibility of enriched tiles
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## EXPERIMENT DESCRIPTION
+CF previous script
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## REFERENCES
+https://bioconductor.org/packages/devel/bioc/vignettes/QuasR/inst/doc/QuasR.html
+ATAC-seq: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6231769/
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## INPUT
+
+- normalized read counts
+- 500 bp tiles
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## OUTPUT
+
+- enriched tiles
+- atac-score in enriched tiles
+
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Support libraries
+This script requires the following packages to be installed:
+```{r}
+reference_genome <- 'BSgenome.Celegans.UCSC.ce10'
+library(reference_genome, character.only = T)
+library(ggplot2)
+library(gridExtra)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Load previous
+```{r}
+load( file.path(".","RDATA","2587R-2633R_projs.RData") )
+```
+
+
+
+
+
+<!-- ======================================================================= -->
+# Prepare 500nt tiles
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Set up
+```{r}
+selected_chroms <- setdiff( seqnames(get(reference_genome)), "chrM" ) # remove ChrM
+tileWidth <- 500
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Get tiles
+```{r}
+windows.gr <- tileGenome(
+  seqlengths = seqinfo(get(reference_genome)), 
+  tilewidth  = tileWidth, 
+  cut.last.tile.in.chrom = TRUE )
+windows.gr <- subset(windows.gr, seqnames != "chrM") # drop MT
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## QC: tile nucleotide frequencies
+
+### Counting NT freqs
+```{r}
+windows.seq <- getSeq(get(reference_genome), windows.gr) # a few secs
+windows.oligoFreq <- as.data.frame(oligonucleotideFrequency(windows.seq, width=1)) # calculate the nt freq in a sliding window of width=1 nt
+windows.oligoFreq$width <-
+  windows.seq@ranges@width # Note: last tile of each chr is not 500 bp wide, cut.last.tile.in.chr=TRUE
+windows.oligoFreq$GC_perc <- 
+  100 * (windows.oligoFreq$G + windows.oligoFreq$C) / windows.oligoFreq$width
+
+rm(windows.seq)
+```
+
+
+### GC content histogram
+```{r fig.width=4, fig.height=4}
+par(op) ; par(mar=c(4, 4, 0.5, 0.5))
+h <- hist(windows.oligoFreq$GC_perc, 
+     xlim=c(0, 100), breaks=32,
+     xlab="GC (%)", main="")
+m <- mean(windows.oligoFreq$GC_perc)
+abline(v=m, col="purple")
+text(m, max(h$counts), round(m, 2), adj=c(0, 1), col="purple")
+
+rm(h,m)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Count ChIPseq reads in 500nt tiles
+
+```{r}
+clObj <- makeCluster(20)
+```
+
+
+<!-- ----------------------------------------------------------------------- -->
+## QuasR counting
+```{r}
+print(system.time({
+  windows.cnt_2587 <- qCount(
+    proj_2587, windows.gr, clObj=clObj) 
+})) # ~2min
+print(system.time({
+  windows.cnt_2633 <- qCount(
+    proj_2633, windows.gr, clObj=clObj) 
+})) # ~1.25min
+```
+
+```{r}
+stopCluster(clObj)
+rm(clObj)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Normalise read counts by library size
+
+Scale conditions with large nr of mapped reads to condition with smallest nr of mapped reads.
+Note: smallest as of 17/01/2022 is ChIP_350nM.
+Note: applying shifted log2 transform with a pseudocount of 16 
+(helps w/ RNA molecule duplication affecting the sequencing. 
+Note: since data is not paired-end, it is too risky to remove alledgedly duplicated reads).
+
+```{r}
+normCnts <- function(mat, alnstats) {
+  libnorm.factor <- min(alnstats[,'mapped']) / alnstats[,'mapped'] 
+  libnorm.factor <- libnorm.factor[ paste0(
+    colnames(mat), ":genome") ]
+  mat <- t(t(mat)*libnorm.factor)
+  return(log2(mat+16))
+}
+
+windows.norm1 <- normCnts(windows.cnt_2587[,-1], alnstats_2587)
+windows.norm2 <- normCnts(windows.cnt_2633[,-1], alnstats_2633)
+
+windows.norm <- cbind(windows.norm1, windows.norm2)
+rm(windows.norm1, windows.norm2)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## GC preference plots
+```{r fig.width=7, fig.height=7}
+par(op) ; par(mar=c(4, 5, 1.5, 0.5),mfrow=c(2,2))
+for (i in 1:ncol(windows.norm)){
+  smoothScatter(
+    windows.oligoFreq$GC_perc, 
+    windows.norm[,i], 
+    xlab='GC content', ylab='norm read counts\nin 500b windows [sl2]',
+    main = colnames(windows.norm)[i],
+    nrpoints = 1000, 
+    ylim = range(windows.norm),
+    colramp = colorRampPalette(c("white", "lightblue", "blue", "purple", "magenta", "white"))
+  )
+}
+rm(i)
+```
+
+We observe in 2587:
+
+- Input: read count distribution is narrow and read count/GC content relationship tends to positive, but is still within 2-fold change
+- ChIP: read count distribution is a bit less narrow compared to input. Read count/GC content relationship tends to positive and drifts a bit of on the low GC content side. Read count/GC content relationship is similar for different concentrations of salt. 
+- Enrichment is clearly visible right above the mass, and much more prominent compared to 2465R.
+- In contrast to 2465R, enrichment does not increase with more stringent washing conditions (in 2465R it was more pronounced in 500 mM compare to 200 mM and 350 mM)
+
+
+In 2633: 
+
+- everything looks quite worse, with a notable GC bias.
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Enrichment plots
+```{r fig.width=10.5, fig.height=3.5}
+par(op) ; par(mar=c(6, 5, 1.5, 0.5),mfrow=c(1,3))
+enrPlot <- function(input_name, chip_name, main="") {
+  smoothScatter(
+    windows.norm[,input_name], 
+    windows.norm[,chip_name], 
+    xlab=input_name, ylab=chip_name,
+    main = main,
+    nrpoints = 1000, 
+    ylim = range(windows.norm),
+    colramp = colorRampPalette(c("white", "lightblue", "blue", "purple", "magenta", "white"))
+  )
+  title(
+    sub = 'norm read counts\nin 500b windows [sl2]',
+    mgp = c(4,1,0))
+  abline(0,1)
+}
+
+for (n in colnames(windows.norm)[2:4]) {
+  enrPlot("input", n, "2587R")
+}
+enrPlot("input_GRH-1_old", "IP_GRH-1_old", "2633R" )
+enrPlot("input_GRH-1_new", "IP_GRH-1_new", "2633R" )
+rm(n)
+```
+
+Same, coloured by GC content:
+```{r fig.width=10.5, fig.height=3.5}
+par(op) ; par(mar=c(6, 5, 1.5, 0.5),mfrow=c(1,3))
+enrPlot <- function(input_name, chip_name, main="") {
+  
+  dat4gg <- data.frame(
+    "input"= windows.norm[,input_name], 
+    "ChIP" = windows.norm[,chip_name], 
+    "GC"   = windows.oligoFreq$GC_perc)
+  
+  pal <-  scale_colour_gradientn(
+    colours = c("cyan",
+                colorRampPalette(c("blue","grey20","red"))(11),
+                "magenta"),
+    values  = c(0,
+                quantile(windows.oligoFreq$GC_perc, probs=seq(0.05,0.995,by=0.1)),
+                1)) 
+  
+  g1 <- ggplot(dat4gg, aes(x=input, y=ChIP, col=GC)) + 
+    geom_abline(slope=1, intercept=0, col="darkgrey") +
+    geom_point(size=0.10, alpha=0.5) + pal +
+    xlab(input_name) + ylab(chip_name) + labs(title=main)
+   
+  g2 <- ggplot(dat4gg, aes(x=(ChIP+input)/2, y=ChIP-input, col=GC)) +
+    geom_hline(yintercept=0, col="darkgrey") +
+    geom_point(size=0.10, alpha=0.5) +  pal +
+    xlab(input_name) + ylab(chip_name) + labs(title=main)
+  
+  grid.arrange(grobs=list(g1, g2), ncol=2)
+}
+
+for (n in colnames(windows.norm)[2:4]) {
+  enrPlot("input", n, "2587R")
+}
+enrPlot("input_GRH-1_old", "IP_GRH-1_old", "2633R" )
+enrPlot("input_GRH-1_new", "IP_GRH-1_new", "2633R" )
+rm(n)
+```
+
+=> We observe in 2587:
+
+-	Normalization: worked quite well, data is more or less on the diagonal, though not perfectly. This is most likely caused by many tiles with enriched counts, which take away counts from the background (because of the relative counts in NGS). 
+-	Enrichment: visible in all washing conditions. Enrichment is stronger and occurs in more tiles compared to 2465R.
+-	In contrast to 2465R, the number of tiles with enriched counts and the number of counts within these tiles does not increases with more stringent washing conditions.
+-	GC content: low GC content tiles have in general less counts, but that is the case for both input and ChIP. However, there is a bias for very low GC content tiles, i.e. they are located below the diagonal. This is also clear in the previous figure, where the low GC content counts are off the straight line through the background for ChIP, but less for the input. Hence, we may underestimate the enrichment in low GC content tiles.
+
+
+
+
+
+<!-- ======================================================================= -->
+# Tile enrichment calling
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Set arbitrary cutoffs for tile enrichment
+
+
+### Choice of salt concentration to establish enrichment on
+```{r}
+sel_input <- "input"
+sel_conc  <- "ChIP_500mM"
+windows.FE <- data.frame(
+  "input" = windows.norm[,sel_input],
+  "ChIP"  = windows.norm[,sel_conc]
+)
+windows.FE[,"mean"] <- 
+  rowMeans(windows.FE[,c("input", "ChIP")])
+windows.FE[,"FE"]   <- 
+  windows.FE[,"ChIP"] - windows.FE[,"input"]
+```
+
+
+### Enrichment quantiles
+How many tiles (of 500bp) have enrichments above a certain threshold?
+```{r}
+tmp <- as.data.frame(cbind( "FE" = quantile(
+  windows.FE[,"FE"], probs=c(
+    seq(0,0.9,by=0.05),
+    seq(0.91,0.99,by=0.01),
+    seq(0.9925,1,by=0.0025))) ))
+tmp$nb_tiles_below <- unlist(lapply(tmp$FE, function(fe) { 
+  sum(windows.FE[,"FE"]<=fe)
+}))
+tmp$nb_tiles_above <- unlist(lapply(tmp$FE, function(fe) { 
+  sum(windows.FE[,"FE"]>=fe)
+}))
+tmp
+
+rm(tmp)
+```
+
+
+### Exploratory plot
+
+Setting thresholds manually.
+
+```{r fig.width=8, fig.height=4}
+# set up
+input_threshs <- c(4.1, 8.25)
+fc_threshs <- c(0.5,0.85, 1.5)
+smooth_pal_fn <- colorRampPalette(c(
+  "white", "lightblue", "blue", "darkblue", "purple", "magenta", "white"))
+
+# input vs sample comparison
+par(op) ; par(mfrow=c(1,2), mar=c(4,4,2.5,0.5))
+smoothScatter(
+  windows.FE[,"input"], windows.FE[,"ChIP"], 
+  pch='.', xlab=paste(sel_input,"[sl2]"),  ylab=paste(sel_conc,"[sl2]"), 
+  colramp = smooth_pal_fn,
+  main='norm read counts\nin 500b windows [sl2]')
+abline(0,1, col="darkgrey"); abline(v=input_threshs, col="red")
+
+# MA plot
+smoothScatter(
+  windows.FE[,"mean"], 
+  windows.FE[,"FE"],
+  xlab='mean norm counts [sl2]', ylab='Fold Enrichment [sl2]', 
+  colramp = smooth_pal_fn,
+  main='MA plot')
+abline(h=0, col="darkgrey")
+abline(h=fc_threshs, col="red")
+```
+
+
+### Determine tile assignments
+```{r}
+tmp1 <- cut(
+  windows.FE[,"input"], 
+  breaks = c(0,input_threshs, Inf),
+  labels = c("too lowly expressed", "OK", "overmapped"))
+tmp2 <-  cut(
+  windows.FE[,"FE"], 
+  breaks = c(-Inf,fc_threshs, Inf),
+  labels = c("not enriched", "debatably enriched", "enriched", "highly enriched"))
+
+windows.FE[,"assignment"] <- ifelse(
+  tmp1 == "OK", as.character(tmp2), as.character(tmp1)
+)
+rm(tmp1, tmp2)
+print(cbind("nbTiles"=table(windows.FE[,"assignment"])))
+```
+
+
+### Selection plot
+
+Same as above, but points coloured by selection criteria.
+
+```{r fig.width=8, fig.height=4}
+# palette
+pal <- c(
+  "debatably enriched" = "pink",
+  "enriched" = "red",
+  "highly enriched" = "magenta",
+  "not enriched" = "darkgrey",
+  "overmapped" = "black",
+  "too lowly expressed" = "lightblue"
+)
+
+# input vs sample comparison
+par(op) ; par(mfrow=c(1,2), mar=c(4,4,2.5,0.5))
+plot(
+  windows.FE[,"input"], windows.FE[,"ChIP"], 
+  pch='.', xlab='input [sl2]', ylab=paste(sel_conc,"[sl2]"), 
+  col = pal[windows.FE[,"assignment"]],
+  main='norm read counts\nin 500b windows [sl2]')
+abline(0,1, col="darkgrey"); abline(v=input_threshs, col="red")
+
+# MA plot
+plot(
+  windows.FE[,"mean"], 
+  windows.FE[,"FE"],
+  xlab='mean norm counts [sl2]', ylab='Fold Change [sl2]', 
+  pch=".", col = pal[windows.FE[,"assignment"]],
+  main='MA plot')
+abline(h=0, col="darkgrey")
+abline(h=fc_threshs, col="red")
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## QC: Check same tile assignments in other salt concentrations
+```{r fig.width=12, fig.height=4}
+# palette
+pal <- c(
+  "debatably enriched" = "pink",
+  "enriched" = "red",
+  "highly enriched" = "magenta",
+  "not enriched" = "darkgrey",
+  "overmapped" = "black",
+  "too lowly expressed" = "lightblue"
+)
+
+par(op) ; par(mfrow=c(1,3), mar=c(4,4,2.5,0.5))
+for (conc in colnames(windows.norm)[2:4]) {
+  
+  # input vs sample comparison
+  plot(
+    windows.norm[,sel_input], windows.norm[,conc], 
+    pch='.', xlab=paste(sel_input,'[sl2]'), ylab=paste(conc,"[sl2]"), 
+    col = pal[windows.FE[,"assignment"]],
+    main='norm read counts\nin 500b windows [sl2]')
+  abline(0,1, col="darkgrey"); abline(v=input_threshs, col="red")
+  
+}
+rm(conc, pal)
+```
+=> Good consistency: enriched and highly enriched look like they would be called as such at lower concentrations too.
+
+
+
+
+<!-- ======================================================================= -->
+# Integrate with ATAC-seq
+
+Publicly-available ATAC-seq data from Jaenes, et al 2018 PMID:30362940.
+
+### Load ATAC-seq data
+From one of Milou's other analyses.
+```{r}
+fn <- "2020-09-15 ATACscore_500bpTiles_WT_L2.csv"
+if (!file.exists( file.path(".","DATA",fn) )) {
+  file.copy( 
+    file.path(
+      "/tungstenfs","scratch","ggrossha","meeumilo","scripts","ATACseq",
+      "Jaenes2018","ATACscore",
+      fn),
+    file.path(".","DATA",fn)  )
+}
+
+atac.score.l2 <- read.csv(
+  file.path(".","DATA",fn) , 
+  row.names = 1)
+windows.FE[,"atac"] <-
+  log2(atac.score.l2+16) # assuming this data has same tiles (?)
+
+rm(atac.score.l2)
+```
+
+
+### Integrate with ChIP-seq
+```{r fig.width=5, fig.height=4}
+ok <- (! windows.FE$assignment %in% c("overmapped", "too lowly expressed" ))
+
+ggplot(windows.FE[ok,], aes(x=input, y=ChIP, col=atac)) + 
+  geom_abline(intercept=0, slope=1, col="darkgrey") + 
+  geom_point(size=0.05, alpha=0.5) +
+  scale_color_gradient(low="blue", high="red") + theme_classic()
+ggplot(windows.FE[ok,], aes(x=mean, y=FE, col=atac)) + 
+  geom_hline(yintercept=0, col="darkgrey") +
+  geom_point(size=0.05, alpha=0.5) +
+  scale_color_gradient(low="blue", high="red") + theme_classic()
+ggplot(windows.FE[ok,], aes(x=atac, y=FE, col=assignment)) + 
+  geom_hline(yintercept=0, col="darkgrey") +
+  geom_point(size=0.2, alpha=0.5) +
+  theme_classic()
+
+rm(ok)
+```
+
+=> Milou said:
+
+-	ATAC-seq score increases with increasing read counts in the background of ChIP and corresponding ATAC-seq samples. This is what we would expect, as very dense chromatin is difficult to get ChIP-seq reads from. 
+-	Selected tiles (from Figure 1), are enriched for higher ATACscore, i.e. more accessible chromatin. We indeed expect TF to bind to open chromatin.
+-	In the background signal there is a trend towards more accessible chromatin for enriched read counts that are at the higher end of the background. Note the lower left to higher right trend. Hence, we may overestimate the selection of tiles with high ATAC-score, and underestimate the selection of tiles with low ATAC-score. However, there are very few tiles with enriched read counts in the latter in general. The former can be addressed by making a more stringent cut-off.
+
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save for later
+Replace previous file with updated version:
+```{r}
+save(
+  windows.gr, windows.oligoFreq, 
+  windows.cnt_2587, windows.cnt_2633, 
+  windows.norm, windows.FE,
+  file = file.path(".","RDATA","2587R-2633R_tileFEs.RData")
+)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->

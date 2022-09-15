@@ -1,0 +1,736 @@
+---
+title: "GRH-1 ChIP-seq: prepare MACS2 peaks"
+author: Milou MEEUSE, A. Alex T. SMITH
+date: 09/02/2022 - 07/02/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+
+
+<!-- ======================================================================= -->
+# Original extract from Milou
+
+Prepare data from MACS2 peaks
+
+
+<!-- ----------------------------------------------------------------------- -->
+## SCRIPT DESCRIPTION
+Analysis was performed by: Milou Meeuse
+
+This code allows the user to assign the peaks identified by MACS2 to genes
+
+This script consists of the following steps: 
+  (0) load the proj object in the environment
+  (1) load & prepare MACS2 data
+  <!-- (5) heatmaps of ChIP signal across genes -->
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## EXPERIMENT DESCRIPTION
+CF previous script
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## REFERENCES
+https://github.com/hbctraining/Intro-to-ChIPseq/blob/master/lessons/05_peak_calling_macs.md
+https://bioconductor.org/packages/devel/bioc/vignettes/QuasR/inst/doc/QuasR.html
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## INPUT
+
+- previous proj objects for 2587R and 2633R
+- narrow peak files from MACS2
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## OUTPUT
+
+- QuasR-derived enrichments for peaks combined from both replicates
+
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+```{css}
+.bash {
+  background-color: lightgrey;
+  font-family: "Courier New", "Lucida Console", monospace;
+  text-indent: -15px;
+  padding-left: 30px;
+}
+```
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Support libraries
+This script requires the following packages to be installed:
+```{r}
+reference_genome <- 'BSgenome.Celegans.UCSC.ce10'
+reference_genome_4map <- 'ce10'
+library(reference_genome, character.only = T)
+library(ggplot2)
+
+source("./support_GR.R")
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Load previous
+```{r}
+load( file.path(".","RDATA","2587R-2633R_projs.RData") )
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Get peaks & peak counts
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Run MACS2 on the command line
+
+Initial runs:
+
+- Performed on 16.10.2020 and on 27.11.2020 for 2587 and 2633, repsectively, by Milou.  
+- Re-run by Alex on 09/02/2022. Took ~12min to run on x7.
+- Nomodel option to remove estimation of fragment size by MACS2.
+
+
+New runs:
+
+- by Alex on 17/08/2022, re-enabling model estimation. Tile-based analysis
+suggests there may be >1k 500bp tiles of enrichment >1.2, so we could build a model
+using that as a threshold (reminder: default bandwith for shift modelling: 300bp).
+However, the parameter only accepts integer values. I used a minimum of 1 for 
+most runs, and set it to 2 for those that yielded too few bins with 1.
+
+
+::: {.bash}
+module purge
+module use /tungstenfs/groups/gbioinfo/Appz/easybuild/modules/all
+module use /tungstenfs/groups/gbioinfo/Appz/modules
+module load MACS2/2.1.3.3
+
+
+out_dir="/tungstenfs/scratch/ggrossha/smitalex/RProjects/group/GRH-1_ChIP-seq/DATA/MACS2"
+if [ ! -d "$out_dir" ]; then
+  mkdir -p ${out_dir}
+fi
+cd ${out_dir}
+
+
+bam_dir="/tungstenfs/nobackup/ggrossha/smitalex/DATA/BAM"
+ls -lha ${bam_dir} | head
+
+
+run_name="2587R_350mM"
+macs2 callpeak \
+  -t ${bam_dir}/ChIP_350mM_2587F2_dddf60821da5.bam \
+  -c ${bam_dir}/input_2587F1_dddf3f094d00.bam \
+  -n ${run_name} \
+  -g ce \
+  -m 2 50 \
+  2> ${run_name}.err ; 
+  
+run_name="2587R_500mM"
+macs2 callpeak \
+  -t ${bam_dir}/ChIP_500mM_2587F3_dddf390302e8.bam \
+  -c ${bam_dir}/input_2587F1_dddf3f094d00.bam \
+  -n ${run_name} \
+  -g ce \
+  -m 2 50 \
+  2> ${run_name}.err ; 
+  
+run_name="2587R_500mM_summits"
+macs2 callpeak \
+  -t ${bam_dir}/ChIP_500mM_2587F3_dddf390302e8.bam \
+  -c ${bam_dir}/input_2587F1_dddf3f094d00.bam \
+  -n ${run_name} \
+  -g ce \
+  -m 2 50 \
+  --call-summits \
+  2> ${run_name}.err ; 
+  
+run_name="2587R_1M"
+macs2 callpeak \
+  -t ${bam_dir}/ChIP_1M_2587F4_dddf1b4f3c7d.bam \
+  -c ${bam_dir}/input_2587F1_dddf3f094d00.bam \
+  -n ${run_name} \
+  -g ce \
+  -m 2 50 \
+  2> ${run_name}.err ; 
+
+
+run_name="2587R_combo"
+macs2 callpeak \
+  -t ${bam_dir}/ChIP_350mM_2587F2_dddf60821da5.bam \
+     ${bam_dir}/ChIP_500mM_2587F3_dddf390302e8.bam \
+     ${bam_dir}/ChIP_1M_2587F4_dddf1b4f3c7d.bam \
+  -c ${bam_dir}/input_2587F1_dddf3f094d00.bam \
+  -n ${run_name} \
+  -g ce \
+  -m 1 50 \
+  2> ${run_name}.err ; 
+  
+
+run_name="2633R_old"
+macs2 callpeak \
+  -t ${bam_dir}/IP_GRH-1_old_2633F4_df983f36dd4b.bam \
+  -c ${bam_dir}/input_GRH-1_old_2633F3_df984d773a70.bam \
+  -n ${run_name} \
+  -g ce \
+  -m 2 50 \
+  2> ${run_name}.err ; 
+
+run_name="2633R_new"
+macs2 callpeak \
+  -t ${bam_dir}/IP_GRH-1_new_2633F2_df982c07b83d.bam \
+  -c ${bam_dir}/input_GRH-1_new_2633F1_df9827ec2378.bam \
+  -n ${run_name} \
+  -g ce \
+  -m 1 50 \
+  2> ${run_name}.err ; 
+  
+:::
+
+
+Option explanations (cf https://hbctraining.github.io/Intro-to-ChIPseq/lessons/05_peak_calling_macs.html):
+
+- t/c: treatment and control file lists, resp.
+- n: name of experiment, prefix for files created
+- g: effective genome size. Defaults exist for common organisms, eg ce.
+- m: enrichment range for selecting 1k bins within which to estimate the read shift model.
+Modelling will not work if <1k bins are found. Option --nomodel can be used to deactivate
+model building, in which case a default shift of 100bp is used.
+- bw: bandwidth for shift modelling, default 300bp.
+- B: fragment pileup, control lambda, -log10pvalue and -log10qvalue scores are saved to bedGraph files.
+- --call-summits: essentially, try and locate "sub-peaks" and return their summits.
+However, the macs2 output in this setting is confusing. Each row in the narrowPeak file
+is for a sub-peak; sub-peaks are named "peak_identifier-sub_peak_identifier"; the
+seqnames, start and end are those of the PEAKS, but the reported peak heights, enrichments
+etc are for the sub-peak, so the file cannot be used to visualise the sub-peaks
+individually with parsing (see below).
+
+
+### Clean up
+Remove useless files (Excel files and bed files are redundant with .narrowPeak files & .err output).
+```{r}
+to_rm <- c(
+  list.files(file.path(".","DATA","MACS2"), ".xls", full.names=T),
+  list.files(file.path(".","DATA","MACS2"), ".bed", full.names=T)
+)
+file.remove(to_rm)
+rm(to_rm)
+```
+
+
+
+### Optional: extract narrowPeak file for summits
+If you ran MACS2 with option --call-summits, the output file format is confusing.
+You can use this code to extract a narrowPeak file with a row for each summit specifically,
+using a fixed width around each summit as a simplification:
+
+::: {bash}
+cat 2587R_500mM_summits_peaks.narrowPeak | \
+  awk 'BEGIN{FS="\t"} { print $1 FS $2+$10-50 FS $2+$10+50 FS $4 FS $5 FS $6 FS $7 FS $8 FS $9 FS $10}' \
+  > 2587R_500mM_summits.narrowPeak
+:::
+
+If you want to load that original narrowPeak file into R, you'll have to parse it differently,
+reducing it to one entry per peak (not sure how you'd handle the sub-peak-level data),
+or treat things at the sub-peak level (not sure how you'd handle the sub-peak regions
+all being equal).
+
+Note: Alex 19/08/2022: Many peaks have multiple clusters of predicted binding sites
+using the top predicted motif using the general peak data. Looking at these "sub-peaks" in IGV,
+very often the 100bp window around the peak or sub-peak summits is not enough to capture
+the predicted sites, and many sites are entirely missed (often bc they lie within 
+the "shoulder" of a highly-enriched subpeak and are thus missed as sub-peaks by MACS2).
+I conclude that we cannot rely on MACS2 sub-peaks nor summits to derive more precise motifs.
+
+
+### List MACS2 runs
+```{r}
+macs2_run_names <- c(
+  "2587R_350mM",
+  "2587R_500mM",
+  "2587R_1M",
+  # dropping sub-peaks
+  "2587R_combo",
+  "2633R_old",
+  "2633R_new"
+)
+```
+
+
+### Some QC across runs
+```{r}
+invisible(lapply(macs2_run_names, function(n) {
+  
+  tmp <- readLines(file.path(
+    ".", "DATA", "MACS2", paste0(n, ".err")))
+  cat("*", n, ":\n",
+    tmp[grepl("number of paired peaks", tmp)], "\n",
+    tmp[grepl("predicted fragment length is", tmp)], "\n", sep=""
+  )
+  cat(
+    tmp[grepl("WARNING", tmp)], "\n"
+  )
+  
+  tmp <- readLines(file.path(
+    ".", "DATA", "MACS2", paste0(n, "_peaks.narrowPeak")))
+  cat("-> Final nb peaks:",length(tmp), "\n")
+  
+  cat("\n")
+}))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Import peak data
+
+### Read in peak files & parse to GRanges
+Import all files:
+```{r}
+fns <- file.path(
+  ".", "DATA", "MACS2", paste0(macs2_run_names, "_peaks.narrowPeak"))
+names(fns) <- macs2_run_names
+
+peaks.gr.list <- lapply(
+  fns, 
+  load_MACS2_to_GR,
+  genome = get(reference_genome)
+)
+
+print(peaks.gr.list)
+
+rm(fns)
+```
+
+
+### Define sample pairings used for peak calling
+```{r}
+sample_pairs <- list(
+  "2587R_350mM" = c("input"="input", "IP"="ChIP_350mM"),
+  "2587R_500mM" = c("input"="input", "IP"="ChIP_500mM"),
+  "2587R_1M"    = c("input"="input", "IP"="ChIP_1M"),
+  # no real "pair" for the combo peaks, we'll use the 500mM for illustrative purposes
+  "2587R_combo" = c("input"="input", "IP"="ChIP_500mM"),
+  "2633R_old"   = c("input"="input_GRH-1_old", "IP"="IP_GRH-1_old"),
+  "2633R_new"   = c("input"="input_GRH-1_new", "IP"="IP_GRH-1_new")
+)
+stopifnot(all( names(sample_pairs) %in% names(peaks.gr.list)))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Filter out peaks in overmapped regions
+
+### Load in tiles
+```{r}
+load(file.path(".","RDATA","2587R-2633R_tileFEs.RData"))
+rm(
+  # windows.gr,
+  windows.oligoFreq,
+  windows.cnt_2587, windows.cnt_2633,
+  #windows.norm, 
+  windows.FE
+)
+```
+
+
+### View overmapped tiles for each sample pair
+```{r fig.width=7.5, fig.height=5}
+threshs <- c(
+  "2587R_350mM" = 8.35,
+  "2587R_500mM" = 8.35,
+  "2587R_1M"    = 8.35,
+  "2587R_combo" = 8.35,
+  "2633R_old"   = 7.9,
+  "2633R_new"   = 7.8
+)
+overmapped_tile_idx <- list()
+par(op) ; par(mar=c(4,4,1.5,0.5), mfrow=c(2,3))
+for (sample_pair_n in names(sample_pairs)) {
+  
+  tmp <- data.frame(
+    "input" = windows.norm[,sample_pairs[[sample_pair_n]]["input"]],
+    "chip"  = windows.norm[,sample_pairs[[sample_pair_n]]["IP"]]
+  )
+  bOvermapped <- (tmp$input>=threshs[[sample_pair_n]])
+  plot(tmp,
+    pch=".", 
+    col=ifelse(bOvermapped, "darkred","darkblue"),
+    main=sample_pair_n )
+  abline(v=threshs[[sample_pair_n]], col="magenta", lty="dashed")
+  
+  overmapped_tile_idx[[sample_pair_n]] <- which(bOvermapped)
+
+}
+```
+
+
+Zoom in on setup used in the paper:
+```{r fig.width=1.75, fig.height=1.75}
+sample_pair_n = names(sample_pairs)[2]
+
+pdf(file.path(".","PAPER","QC_tiles_overmapped_rep1.pdf"), 
+    width=3, height = 3)
+  par(op) ; par(mar=c(4,4,1.5,0.5))
+  tmp <- data.frame(
+    "input" = round(windows.norm[,sample_pairs[[sample_pair_n]]["input"]], 5),
+    "chip"  = round(windows.norm[,sample_pairs[[sample_pair_n]]["IP"]],5)
+  )
+  tmp$bOvermapped <- 1*(tmp$input>=threshs[[sample_pair_n]])
+  plot(tmp[,c("input","chip")],
+    pch=".", 
+    col=ifelse(tmp$bOvermapped>0, "red","slateblue"),
+    main=sample_pair_n )
+  abline(v=threshs[[sample_pair_n]], col="magenta", lty="dashed")
+dev.off()
+
+write.table(
+  tmp, file.path(".","PAPER","QC_tiles_overmapped_rep1.tsv"),
+  col.names = T, row.names = F, quote = F
+)
+```
+
+
+Clean up:
+```{r}
+rm(threshs, sample_pair_n, tmp, bOvermapped)
+```
+
+
+### ID & filter out overmapped peaks in each peak set
+```{r}
+tmp <-
+  lapply( names(peaks.gr.list), function(n) {
+    
+    peaks_gr <- peaks.gr.list[[n]]
+  
+    # Find overmapped tile-peak overlaps
+    overlap_res <- findOverlaps(
+      query=windows.gr[overmapped_tile_idx[[n]]], 
+      subject=peaks_gr,
+      type = "any", select = "all")
+    
+    
+    # ID overmapped peaks
+    overmapped_peakIDs <- sort(unique( peaks_gr$name[
+      subjectHits(overlap_res) ] ))
+    
+    cat(n,": There were ", 
+        length(overmapped_tile_idx[[n]]), "/", length(windows.gr), " overmapped windows ",
+        "matching to ", 
+        length(overmapped_peakIDs), "/", length(peaks_gr), " peaks.\n", sep="")
+    
+    
+    # Filter
+    peaks_gr <- peaks_gr[ (! peaks_gr$name %in% overmapped_peakIDs) ,]
+    peaks_gr
+
+} )
+names(tmp) <- names(peaks.gr.list)
+
+peaks.gr.list <- tmp
+rm(tmp)
+```
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Annotate peak data
+
+```{r}
+peaks.gr.list <- lapply( 
+  peaks.gr.list, getGC, genome = get(reference_genome) )
+peaks.gr.list <- lapply(
+  peaks.gr.list, getMap, genome = reference_genome_4map )
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save raw peak data
+
+```{r}
+save(
+  peaks.gr.list,
+  file = file.path(".","RDATA","2587R-2633R_peaks.RData"))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Examine peak data
+
+### %GC distributions
+```{r}
+xlims <- range(lapply(peaks.gr.list, function(gr) {gr$pGC} ))
+invisible(lapply( names(peaks.gr.list), function(n) {
+  peaks.gr <- peaks.gr.list[[n]]
+  print(ggplot(data.frame(x=peaks.gr$pGC), aes(x)) +              
+    geom_histogram(bins = 64) +
+    scale_x_log10(limits=xlims) + 
+    labs(title=paste("Histogram of %GC", n),
+         subtitle = paste("mean =",round(mean(peaks.gr$pGC), 2))) + 
+      xlab("%GC")
+  )
+} ))
+rm(xlims)
+```
+
+
+### Enrichments distribution
+```{r}
+xlims <- range(lapply(peaks.gr.list, function(gr) {gr$MACS2_foldEnr} ))
+invisible(lapply( names(peaks.gr.list), function(n) {
+  peaks.gr <- peaks.gr.list[[n]]
+  print(ggplot(data.frame(x=peaks.gr$MACS2_foldEnr), aes(x)) +              
+    geom_histogram(bins = 64) +
+    scale_x_log10(limits=xlims) + 
+    labs(title=paste("Histogram of enrichments", n)) + 
+      xlab("FE")
+  )
+} ))
+rm(xlims)
+```
+
+
+### Peak size distribution
+```{r}
+xlims <- range(lapply(peaks.gr.list, width))
+invisible(lapply( names(peaks.gr.list), function(n) {
+  peaks.gr <- peaks.gr.list[[n]]
+  print(ggplot(data.frame(x=width(peaks.gr)), aes(x)) +              
+    geom_histogram(bins = 64) +
+    scale_x_log10(limits=xlims) + 
+    labs(title=paste("Histogram of peak widths", n)) + 
+      xlab("peak width")
+  )
+} ))
+rm(xlims)
+```
+=> Smallest peak is ~200nt, largest is >10k.
+
+
+### Volcano plot
+```{r}
+invisible(lapply( names(peaks.gr.list), function(n) {
+  tmp <- as.data.frame(mcols(peaks.gr.list[[n]]))
+  # tmp$signif <- cut(tmp$MACS2_log10qVal, breaks = sort(-log10(c(0, 1e-3, 1e-2, 0.05, 0.10, 1))))
+  print(ggplot(tmp, aes_string(x="MACS2_foldEnr", y="MACS2_log10qVal")) +              
+    geom_point(aes_string(color="MACS2_log10qVal"), size=0.5, alpha=0.5) +
+      labs(title=n)
+  ) 
+} ))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Re-calculate peak enrichments using QuasR
+
+Recommended approach by Dimos.
+
+
+### Count reads in peaks with QuasR
+```{r}
+clObj <- makeCluster(20)
+peaks.cnt.list <- list()
+combo_samples <- c("ChIP_350mM", "ChIP_500mM", "ChIP_1M")
+
+for (n in names(peaks.gr.list)) {
+  print(system.time({
+    peaks.cnt.list[[n]] <- as.data.frame(cbind(
+      qCount(proj_2587, peaks.gr.list[[n]], clObj=clObj)[,-1],
+      qCount(proj_2633, peaks.gr.list[[n]], clObj=clObj)[,-1]
+    ))
+    peaks.cnt.list[[n]][,"combo"] <- rowSums(
+      peaks.cnt.list[[n]][,combo_samples])
+  })) # ~1-2s on 20 nodes
+}
+
+# lapply(peaks.cnt.list, head)
+```
+
+
+### QC metric: % mapped reads in peak
+Michael recommended normalising the samples based on non-peak regions. 
+The %reads in peaks can give us an idea if this is necessary 
+(the higher it is, the more likely it would make a difference).
+```{r fig.width=3.5, fig.height=5}
+alnstats <- as.data.frame(rbind(alnstats_2587, alnstats_2633))
+rownames(alnstats) <- gsub(":genome","",rownames(alnstats))
+alnstats["combo",] <- colSums(alnstats[combo_samples,])
+alnstats["combo","mapped_perc"] <- round(100*alnstats["combo","mapped"] /
+  (alnstats["combo","mapped"] + alnstats["combo","unmapped"]),2)
+
+par(op) ; par(mar=c(8,4,1.5,0.5))
+layout(matrix(1:6,nrow=3, byrow = T))
+for (n in names(peaks.cnt.list)) {
+   
+  alnstats[,paste0("inPeak_",n)] <- colSums(
+    peaks.cnt.list[[n]][,rownames(alnstats)])
+  alnstats[,paste0("inPeak_perc_",n)] <- round(100 * (
+    alnstats[,paste0("inPeak_",n)] / alnstats[,"mapped"]),2)
+  
+  barplot(alnstats[,paste0("inPeak_",n)], 
+          main=n, ylab="nb reads in peaks", names.arg=rownames(alnstats), las=3)
+  barplot(alnstats[,paste0("inPeak_perc_",n)], ylim=c(0,10),
+          main=n, ylab="%mapped reads in peaks", names.arg=rownames(alnstats), las=3)
+  
+}
+print(alnstats)
+
+rm(n)
+```
+=> Up to ~8% in the samples we care most about (2587 ones). Might be worth doing this
+special normalisation.
+
+
+### Normalisation
+We now have sample pairs for peak calling, and sample pairs for FE calculation.
+Let's iterate across both.
+```{r}
+peaks.gr.fe.list <- list()
+pseudo_counts <- 12
+sample_pairs$`2587R_combo` <- c("input"="input", "IP"="combo")
+
+for (spn4fe in names(sample_pairs)) {
+  for (spn4p in names(sample_pairs)) {
+    
+    # grab peaks
+    peaks.gr <- peaks.gr.list[[ spn4p ]]
+    
+    # grab counts
+    tmp <- as.data.frame(
+      peaks.cnt.list[[ spn4p ]][,sample_pairs[[spn4fe]][c("input","IP")]])
+    
+    # grab alignment stats & calculate not-in-peak read counts
+    # (if not available, use nb mapped reads as default)
+    alnstats_tmp <- alnstats [colnames(tmp),]
+    if (paste0("inPeak_",spn4p) %in% colnames(alnstats_tmp)) {
+      norm_metric <- paste0("noPeak_",spn4p)
+      alnstats_tmp[,norm_metric] <-
+        (alnstats_tmp[,"mapped"] - alnstats_tmp[,paste0("inPeak_",spn4p)])
+    } else {
+      warning(paste0("inPeak_",spn4p), "not found in alignment stats!\n")
+      norm_metric <- "mapped" # default
+    }
+    
+    # derive normalisation factors & apply
+    libnorm.factors <- 
+      min(alnstats_tmp[,norm_metric]) / alnstats_tmp[,norm_metric]
+    tmp <- sweep(tmp, MARGIN = 2, STATS=libnorm.factors, FUN="*")
+    tmp <- log2(tmp+pseudo_counts)
+    
+    # calculate FE & attach to peaks
+    peaks.gr$QuasR_input <- tmp[,1] 
+    peaks.gr$QuasR_ChIP  <- if (ncol(tmp)>2) {
+      rowSums(tmp[,2:ncol(tmp)])
+    } else { tmp[,2] }
+    peaks.gr$QuasR_mean  <- rowMeans(tmp)
+    peaks.gr$QuasR_FE    <- (peaks.gr$QuasR_ChIP - peaks.gr$QuasR_input)
+  
+    # calculate FEs
+    peaks.gr.fe.list[[ paste0(
+      spn4fe, ":", spn4p
+    )]] <- peaks.gr
+  }
+}
+
+# lapply(peaks.gr.fe.list, head)
+
+rm(pseudo_counts, spn4fe, spn4p,
+   peaks.gr, tmp, alnstats_tmp, norm_metric, libnorm.factors)
+```
+
+
+### Sanity check: compare QuasR enrichments amongst each other for same peak sets
+```{r fig.width=5, fig.height=5}
+for (spn4p in names(sample_pairs)) {
+  peaks.gr.fe.list.sub <- peaks.gr.fe.list[ 
+    grep(paste0(":", spn4p, "$"), names(peaks.gr.fe.list), value=T) ]
+  tmp <- do.call(cbind, lapply(peaks.gr.fe.list.sub, function(gr) {gr$QuasR_FE}))
+  colnames(tmp) <- gsub(paste0(":", spn4p, "$"), "", colnames(tmp))
+  pairs(tmp, upper.panel=function(x,y) {
+    abline(a=0, b=1, col="grey")
+    abline(v=1, h=1, col="grey")
+    points(x, y,
+           col="darkblue", pch=".") }, lower.panel = NULL, 
+    main=paste("peaks from:", spn4p), gap=0.75)
+}
+rm(spn4p, peaks.gr.fe.list.sub, tmp)
+```
+
+
+### Sanity check: compare MACS2 to QuasR enrichments
+```{r}
+invisible(lapply( names(peaks.gr.fe.list), function(n) {
+  tmp <- as.data.frame(mcols(peaks.gr.fe.list[[n]]))
+  print(ggplot(tmp,
+         aes_string( x="QuasR_FE", y="MACS2_foldEnr")) +
+    geom_abline(intercept = 0, slope=1, color="grey", linetype="dashed") +
+    geom_hline(yintercept = c(0,1), color=c("black", "grey")) +
+    geom_vline(xintercept = c(0,1), color=c("black", "grey")) +
+    geom_point(aes_string(color="MACS2_log10qVal")) +
+    ggtitle(n)
+  )
+}))
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save for later
+```{r}
+save(
+  peaks.cnt.list,
+  peaks.gr.fe.list,
+  file = file.path(".","RDATA","2587R-2633R_peakFEs.RData"))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Stop cluster
+```{r}
+stopCluster(clObj)
+rm(clObj)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->

@@ -1,0 +1,290 @@
+---
+title: "GRH-1 ChIP-seq: assign MACS2 peaks to genes"
+author: Milou MEEUSE, A. Alex T. SMITH
+date: 12/09/2022 - 08/02/2022 - 07/02/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Support libraries
+This script requires the following packages to be installed:
+```{r}
+# reference_genome <- "BSgenome.Celegans.UCSC.ce10"
+# library(reference_genome, character.only = T)
+
+library(rtracklayer)
+# library(universalmotif)
+# library(monaLisa)
+# library(TFBSTools)
+
+# library(NMF)
+# library(ggplot2)
+# library(gridExtra)
+
+# source(file.path(".","support_GR.R"))
+source("./support_assignment.R")
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Load previous
+
+### Gene regions
+```{r}
+load( file.path(".","RDATA","ce10_gene_regions.RData"))
+rm(exons_gr,
+   geneProm_gr) # make sure we use out own definition
+```
+
+
+### Promoters
+```{r}
+# promoter region: 1000bp upstream of first exon
+geneProm_gr <- promoters(geneBody_gr, upstream=1000, downstream = 0) 
+# promoters that extend beyond the chromosomes are trimmed to chromosome size:
+geneProm_gr <- trim(geneProm_gr) 
+```
+
+
+### Final peaks
+```{r}
+load( file.path(".","RDATA","2587R-2633R_peakFEs.RData"))
+peaks_gr  <- peaks.gr.fe.list[[ "2587R_500mM:2587R_500mM" ]]
+rm(peaks.cnt.list, peaks.gr.fe.list)
+```
+
+
+### Final binding sites
+```{r}
+load( file=file.path(".", "RDATA","GRH1_motif_long.RData") )
+rm(GRH1_score_quantiles)
+
+cat("HOMER score cutoff:",GRH1_pwm@tags$log2cut,"\n")
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Assign features to genes
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Aggregate site information to peak level
+
+### Get max motif score per peak
+```{r}
+o <- findOverlaps(
+  query = GRH1_motif_hits,
+  subject = peaks_gr,
+  type = "any"
+)
+mcols(o)$motifScr <- GRH1_motif_hits[from(o)]$score
+o <- as.data.frame(o)
+
+o <- aggregate(o$motifScr, o[,"subjectHits",drop=F], FUN=function(x){
+  c("max"=max(x), #"mean"=mean(x), 
+    "n"=length(x), "nStrong"=sum(x>=GRH1_pwm@tags["log2cut"]))
+})
+mcols(peaks_gr)[,"BS_scr_max"] <- 
+  mcols(peaks_gr)[,"n_BS_strong"] <-
+  mcols(peaks_gr)[,"n_BS"] <- 0
+mcols(peaks_gr)[o$subjectHits, "BS_scr_max"]   <- o$x[,"max"]
+mcols(peaks_gr)[o$subjectHits, "n_BS"]         <- o$x[,"n"]
+mcols(peaks_gr)[o$subjectHits, "n_BS_strong"]  <- o$x[,"nStrong"]
+
+print(peaks_gr)
+
+rm( o)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Assign peaks to gene regions
+
+Peaks are assigned to a gene based on the following:
+
+* hit to promoter region;
+* hit to gene body;
+* hit to first upstream gene.
+
+
+### Promoter regions
+For each peak, return the overlaps with gene promoter regions.
+```{r fig.width=10, fig.height=4}
+ar_res_pr <- assign_ranges(
+  queries  = peaks_gr, 
+  subjects = geneProm_gr, 
+  assign_type = "overlap", 
+  query_IDs = "peakName", subject_IDs = "geneID",
+  query_dist_type = "mid", subject_dist_type = "end" 
+)
+
+assign_ranges_QC(ar_res_pr, peaks_gr, geneProm_gr)
+```
+Distance = mid(peak) to end(prom)=TSS.
+
+
+### Gene body regions
+For each remaining peak, return the overlaps with gene bodies.
+```{r fig.width=10, fig.height=4}
+ar_res_body <- assign_ranges(
+  queries  = peaks_gr, 
+  subjects = geneBody_gr, 
+  assign_type = "overlap", 
+  query_IDs = "peakName", subject_IDs = "geneID",
+  query_dist_type = "mid", subject_dist_type = "start" 
+)
+
+assign_ranges_QC(ar_res_body, peaks_gr, geneProm_gr)
+# => threshold distances at 30kb
+
+ar_res_body <- subset( ar_res_body, abs(distance)<=30000 )
+```
+Distance = mid(peak) to start(body)=TSS.
+
+
+### Peak upstream of promoter
+For each remaining peak, return the preceding gene.
+```{r fig.width=10, fig.height=4}
+ar_res_ups <- assign_ranges(
+  queries  = peaks_gr, 
+  subjects = punion(geneProm_gr, geneBody_gr), 
+  assign_type = "precede", 
+  query_IDs = "peakName", subject_IDs = "geneID",
+  query_dist_type = "mid", subject_dist_type = "start" 
+)
+
+assign_ranges_QC(ar_res_ups, peaks_gr, geneProm_gr)
+# => threshold distances at 30kb
+
+ar_res_ups <- subset( ar_res_ups, abs(distance)<=30000 )
+```
+=> Midpoint to TSS distances rarely goes over 30kb.
+
+
+### Unassigned peaks
+```{r}
+unassigned_peakNames <- setdiff(peaks_gr$peakName, 
+        c(mcols(ar_res_pr)$peakName, mcols(ar_res_body)$peakName, mcols(ar_res_ups)$peakName))
+
+print(peaks_gr[peaks_gr$peakName %in% unassigned_peakNames])
+
+rm(unassigned_peakNames)
+```
+=> No unassigned peaks.
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Finalise
+
+### Compile & clean up
+```{r}
+fmt_hits <- function(h, type=c("promoter","body","upstream")) {
+  type <- match.arg(type)
+  cbind(
+    type=type,
+    as.data.frame(mcols(h)[,c("peakName","geneID","overlap","distance")])
+  )
+}
+peak_gene_CPDs <- rbind(
+  fmt_hits(ar_res_pr,   "promoter"),
+  fmt_hits(ar_res_body, "body"),
+  fmt_hits(ar_res_ups,  "upstream")
+)
+
+print(peak_gene_CPDs)
+```
+
+
+### Eliminate doublons
+A same peak-gene assignment can appear in more than one setting (promoter, body, upstream).
+So we need to eliminate lower-priority settings to keep only one gene-peak assignment for each.
+```{r}
+# split assignments by peak-gene pairs
+print(system.time({
+  tmp  <- split(
+    peak_gene_CPDs, paste(peak_gene_CPDs$peakName, peak_gene_CPDs$geneID, sep=":"),
+    drop=T) #<2s
+}))
+
+# look at assignments per pair, if more than 1 assignment, 
+# order by priority and keep top priority assignment
+assign_type_order <- c("promoter"=1, "body"=2, "upstream"=3)
+tmp <- lapply(tmp, function(sdf) {
+  if (nrow(sdf)==1) return(sdf)
+  sdf <- sdf[ order( assign_type_order[sdf$type] ) ,]
+  sdf[1,,drop=F]
+})
+
+# rebuild
+tmp <- do.call(rbind, tmp)
+
+# clean up
+peak_gene_CPDs <- tmp
+rm(tmp, assign_type_order)
+```
+
+
+### Report
+```{r}
+reportAssignments <- function(CPDs, title="") {
+  cat(title,":\t",
+      "there were ",length(unique(CPDs$peakName)), " distinct peaks ",
+      "(out of ",length(peaks_gr),") ",
+      "assigned to ",length(unique(CPDs$geneID)), " distinct genes ",
+      "(out of ",length(geneBody_gr),") via ",
+      nrow(CPDs), " correspondences.\n", sep="")
+}
+reportAssignments(peak_gene_CPDs, "Overall")
+reportAssignments(subset(peak_gene_CPDs, type=="promoter"), "Promoter")
+reportAssignments(subset(peak_gene_CPDs, type=="body"), "Gene Body")
+reportAssignments(subset(peak_gene_CPDs, type=="upstream"), "Upstream")
+```
+
+```{r}
+rm(ar_res_pr, ar_res_body, ar_res_ups)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save for later
+```{r}
+save(
+  peaks_gr, peak_gene_CPDs, 
+  file=file.path(".","RDATA","peak_gene_CPDs.RData"))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->

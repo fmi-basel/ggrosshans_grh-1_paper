@@ -1,0 +1,371 @@
+---
+title: "GRH-1 ChIP-seq: Align Reads"
+author: Milou MEEUSE, A. Alex T. SMITH
+date: 09/02/2022 - 17/01/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+
+
+<!-- ======================================================================= -->
+# Blurbs from Milou
+
+Fused from her work on 2587R and 2633R.
+
+Alignment of ChIPseq reads to ce10 _C.elegans_ genome
+
+
+<!-- ----------------------------------------------------------------------- -->
+## SCRIPT DESCRIPTION
+Analysis was performed by: Milou Meeuse
+
+This code allows the user to align the ChIPseq reads to the C.elegans genome using QuasR
+
+This script consists of the following steps: 
+  (1) convert samples.tsv generated with ggrosshans_gnomex_fmi (fmi-basel github) 
+  on GNomEX (intranet) to samples.txt which is compatible with QuasR::qAlign
+  (2) align reads to genome
+  (3) quality control of sequencing reads and alignment
+  (4) make BigWig files
+  (5) save <proj> in an environment (needed to run follow-up scripts)
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## EXPERIMENT DESCRIPTION
+
+Experiment was performed by: Kathrin Braun
+Experiment identifiers in GNomEx: 2587R & 2633R
+Sequencing protocol: ChIPseq NEB Ultra (Dual indexes), 
+HiSeq 50 cycle single end reads, HiSeq 2500, 
+submitted 2020-09-21 & 2020-10-29, resp.
+
+
+### Aims
+
+2587R:
+
+* Replicate of 2465R to find enriched peaks common in 2465R and 2587R. 
+* In 2465R, we observed higher peaks with more stringent washing conditions (increasing salt concentration)
+* Besides repeating 350 mM and 500 mM salt concentration, 1M salt concentration was added to investigate whether peaks increase even more
+
+2633R:
+
+* Technical replicate of 2465R and 2587R, using popcorn of [worms as extracted from for runs(?)]
+2465R and 2587R, to repeat ChIP, library prep and sequencing.
+* We observed that 2587R had much higher ChIPseq peaks compared to 2465R.
+* With this technical replicate we aim to obtain high peaks for both experiments
+* Washing was performed with 500 mM as different washing conditions did not seem to affect peaks in 2587R
+        
+              
+### Method 
+
+* GFP antibody was used for ChIP (ab290, Abcam)
+* HW2603 strain grh-1(syb616(grh-1::GFP::3xFLAG))
+
+
+### Library prep
+
+2633R:
+* with 15 cycles of PCR (normally 9 cycles), 
+IP samples look suboptimal, with high adapter dimers peak and low real library, 
+suggesting the amount of DNA present originally in the IP samples was extremely low
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## REFERENCES
+https://bioconductor.org/packages/devel/bioc/vignettes/QuasR/inst/doc/QuasR.html
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## INPUT
+
+(for each Sequencing Experiment Run)
+- overview of samples: samples.tsv 
+- sequencing reads: fastq.gz files
+- reference genome: BSgenome.Celegans.UCSC.ce10
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## OUTPUT
+
+- samples.txt
+- bam files
+- QCreport
+- BigWig files
+- project information
+- alignment stats
+
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+```{r}
+getwd()
+# setwd("/tungstenfs/scratch/ggrossha/smitalex/RProjects/group/GRH-1")
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Support libraries
+This script requires the following packages to be installed:
+```{r}
+library(QuasR)
+reference_genome <- 'BSgenome.Celegans.UCSC.ce10'
+library(reference_genome, character.only = T)
+library(Biostrings)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Grahpics
+```{r}
+# Defaults (for manual resetting)
+op <- par(no.readonly = T)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Align reads to genome
+
+<!-- ----------------------------------------------------------------------- -->
+## Formatting samples file for QuasR
+
+### 2587R
+2587R_samples.tsv file was generated with the ggrosshans_gnomex_fmi script 
+from github on 2020-10-07 from a file downloaded from GNomEx.  
+Copied here locally by Alex on 17/01/2022.  
+This file needs to be formatted for qAlign (2020-10-08).
+
+```{r}
+samples_tab <- read.table(
+  file = file.path(".","DATA",'2587R_samples.tsv'), sep = '\t', header = TRUE)
+samples_tab <- samples_tab[,c('fq1','Sample.Name')]
+colnames(samples_tab) <- c('FileName', 'SampleName')
+
+samples_file_2587 <- file.path(".","DATA","2587R_samples.txt")
+write.table(
+  samples_tab, file = samples_file_2587, 
+  sep = "\t", row.names = FALSE, quote = FALSE)
+
+rm(samples_tab)
+```
+
+
+
+### 2633R
+2633R1_2020-11-24.txt is a download from GNomEx and contains the sample identifiers.
+samples.tsv file was generated with ggrosshans_gnomex_fmi script 
+from github on 2020-11-24.
+Copied here locally by Alex on 09/02/2022.  
+this file needs to be formatted for qAlign (2020-11-24)
+
+```{r}
+samples_tab <- read.table(
+  file = file.path(".","DATA",'2633R_samples.tsv'), sep = '\t', header = TRUE)
+samples_tab <- samples_tab[,c('fq1','sample')]
+colnames(samples_tab) <- c('FileName', 'SampleName')
+
+# remove HBL-related samples
+samples_tab <- samples_tab[ grep("HBL", samples_tab$SampleName, invert = T) ,]
+
+samples_file_2633 <- file.path(".","DATA","2633R_samples.txt")
+write.table(
+  samples_tab, file = samples_file_2633, 
+  sep = "\t", row.names = FALSE, quote = FALSE)
+
+rm(samples_tab)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Prepare important folders
+```{r}
+# where to put BAM files
+bam_dir <- file.path(
+  "/tungstenfs","nobackup","ggrossha","smitalex","DATA","BAM")
+
+if (!dir.exists(bam_dir))
+  dir.create(bam_dir, recursive = T)
+
+
+# where to stored temporary cached files
+cache_dir <- file.path(
+  "/tungstenfs", "nobackup", "ggrossha", "smitalex", "CACHE")
+
+if (!dir.exists(cache_dir))
+  dir.create(cache_dir, recursive = T)
+
+
+# where to store bigwig files
+bw_dir <- file.path(
+  "/tungstenfs","nobackup","ggrossha","smitalex","DATA","BW")
+
+if (!dir.exists(bw_dir))
+  dir.create(bw_dir, recursive = T)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Perform alignments
+
+```{r}
+clObj <- makeCluster(
+  20 )
+```
+
+
+### 2587
+```{r}
+print(system.time({
+  proj_2587 <- qAlign(
+    samples_file_2587, reference_genome, 
+    clObj = clObj, 
+    alignmentsDir    = bam_dir, 
+    cacheDir         = cache_dir
+  )
+})) # ~1500s from scratch
+print(proj_2587)
+```
+
+
+### 2633
+```{r}
+print(system.time({
+  proj_2633 <- qAlign(
+    samples_file_2633, reference_genome, 
+    clObj = clObj, 
+    alignmentsDir    = bam_dir, 
+    cacheDir         = cache_dir
+  )
+})) # ~1000s from scratch
+print(proj_2633)
+```
+
+
+### Move the log files
+```{r}
+if (all(file.copy( list.files(".", "QuasR_log.*.txt"), 
+                   file.path(".","OUTPUT") ))) {
+  invisible(file.remove( list.files(".", "QuasR_log.*.txt") ))
+}
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Alignment statistics
+
+Alignment stats (NB: includes both primary AND secondary alignments):
+```{r}
+alnStatsHelper <- function(proj) {
+  alnstats <- alignmentStats(proj)
+  alnstats <- cbind(alnstats, "mapped_perc" = round(
+    100 * alnstats[,"mapped"] / (alnstats[,"mapped"] + alnstats[,"unmapped"]), 2 ) )
+  return(alnstats)
+}
+
+cat("\nalnstats_2587:\n")
+print(alnstats_2587 <- alnStatsHelper(proj_2587))
+
+cat("\nalnstats_2633:\n")
+print(alnstats_2633 <- alnStatsHelper(proj_2633))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## QC report
+```{r}
+print(system.time({
+  qQCReport(
+    proj_2587, 
+    pdfFilename = file.path(".","OUTPUT",paste0(Sys.Date(), "_2587R-QCReport.pdf")), 
+    useSampleNames = T, clObj=clObj)
+})) # ~ 120s
+
+print(system.time({
+  qQCReport(
+    proj_2633, 
+    pdfFilename = file.path(".","OUTPUT",paste0(Sys.Date(), "_2633R-QCReport.pdf")), 
+    useSampleNames = T, clObj=clObj)
+})) # ~ 100s
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## BigWig files
+```{r}
+print(system.time({
+  exportwig <- qExportWig(
+    proj_2587, # Note: destination name derived from BAM files, not path
+    createBigWig = TRUE, binsize = 50)
+}))
+
+print(system.time({
+  exportwig <- qExportWig(
+    proj_2633, # Note: destination name derived from BAM files, not path
+    createBigWig = TRUE, binsize = 50)
+}))
+
+for (fn in list.files(".",".*\\.bw")) {
+  system(paste0("mv -u ",fn," ",file.path(bw_dir,fn)))
+}
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save for later
+```{r}
+save(
+  op, 
+  proj_2587, proj_2633,
+  alnstats_2587, alnstats_2633,
+  file = file.path(".","RDATA","2587R-2633R_projs.RData")
+)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Stop cluster
+```{r}
+stopCluster(clObj)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->

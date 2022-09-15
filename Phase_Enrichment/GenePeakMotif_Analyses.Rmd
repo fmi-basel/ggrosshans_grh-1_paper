@@ -1,0 +1,950 @@
+---
+title: "GRH-1: investigating peaks vs genes"
+author: Milou MEEUSE, A. Alex T. SMITH
+date: 30/06/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Dependencies
+```{r}
+op <- par(no.readonly = T)
+
+library(ggplot2)
+library(ggrepel)
+library(gridExtra)
+
+library(universalmotif) # for viewing motifs
+library(TFBSTools) # for manipulating motifs
+
+reference_genome <- "BSgenome.Celegans.UCSC.ce10"
+library(reference_genome, character.only = T)
+
+# library(UpSetR)
+
+source("../support_assignment.R")
+source(file.path("..","phase_enrichment_analysis.R"))
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+# Prepare gene info
+
+### Load prepared gene regions for ce10
+```{r}
+load(file=file.path("..", "..", "GRH-1_ChIP-seq", "RDATA", "ce10_gene_regions.RData"))
+rm( exons_gr, geneProm_gr )
+```
+
+
+### Load osc gene annotation
+```{r}
+AllOsc_info <- read.table(
+  file.path("/tungstenfs","scratch","ggrossha","meeumilo","scripts",
+            "FullDevTC","2019-01-31 AllOsc_info_CIclass.csv"), 
+  sep=',', row.names=1, header=T)
+
+AllNonOsc <-  read.table(
+  file.path("/tungstenfs","scratch","ggrossha","meeumilo","scripts",
+            "FullDevTC","2019-01-31 AllNonOsc_names_CIclass.csv"), 
+  sep=',', header=T)[,"x"]
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Load motifs for motif-dependent analysis
+
+### Load de novo motif
+```{r}
+load( file=file.path("..","..", "GRH-1_ChIP-seq", "RDATA","GRH1_motif_long.RData") )
+rm(GRH1_score_quantiles)
+
+GRH1_HOMER_log2cut <- GRH1_pwm@tags$log2cut
+```
+
+
+### Show motifs
+```{r} 
+g1 <- view_motifs(GRH1_pwm, use.type = "ICM")
+g2 <- view_motifs(GRH1_pwm, use.type = "PWM") + geom_hline(yintercept=0)
+gridExtra::grid.arrange(g1, g2, nrow=2)
+rm(g1, g2)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Load peak & gene-peak-site data
+```{r}
+load( file.path("..","..", "GRH-1_ChIP-seq", "RDATA","peak_gene_CPDs.RData") )
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Sanity checks: GoIs
+
+### Define GoIs
+```{r}
+gns <- c("grh-1", "nhr-23", "nhr-25", "blmp-1", "bed-3", 
+         "pqn-47") # aka myrf-1
+flag_gIDs <- names(geneBody_gr)[  
+  geneBody_gr$gene_name %in% gns ]
+print(GoIs <- as.data.frame(cbind("gene_name"=gns,"geneID"=flag_gIDs)))
+rm(gns, flag_gIDs)
+```
+
+
+### GoI-overlapping features
+```{r}
+GoI_xgr <- geneBody_gr[GoIs$geneID] + 2000
+GoI_xgr$gene_name <- GoIs[ match(names(GoI_xgr), GoIs$geneID) , "gene_name" ]
+
+for (gID in names(GoI_xgr)) {
+  cat("##############################\n",
+      gID,":",GoI_xgr[gID]$gene_name,"\n")
+  cat("* Peaks:\n")
+  print(peaks_gr[ peaks_gr %over% GoI_xgr[gID] ])
+  cat("* Motifs (long):\n")
+  tmp <- (GRH1_motif_hits[ GRH1_motif_hits %over% GoI_xgr[gID] ])
+  tmp <- tmp[order(tmp$score, decreasing = T)]
+  print(tmp)
+}
+
+rm(tmp, gID, GoI_xgr)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Prepare gene-level data describing peaks & motifs & annotations per gene
+
+
+### Add peak info to peak-gene CPDs
+```{r}
+nrow(peak_gene_CPDs)
+all_dat <- merge(
+  peak_gene_CPDs,
+  as.data.frame(peaks_gr),
+  by.x="peakName", by.y="row.names",
+  all.x = T, all.y = F # note: some peaks not assigned, hence the left join
+)[,c("peakName", "geneID", "type", 
+     "MACS2_foldEnr", "MACS2_log10qVal", 
+     "n_BS", "n_BS_strong", "BS_scr_max")]
+nrow(all_dat) 
+```
+
+
+### Aggregate peak info to gene level
+```{r}
+all_dat <- do.call(rbind, lapply(split(all_dat, all_dat[,c("geneID"),drop=F]), function(df) {
+  data.frame(
+    "geneID" = df$geneID[1],
+    "nb_P"  = nrow(df),
+    "max_FE"  = max(df$MACS2_foldEnr),
+    "tot_n_BS" = sum(df$n_BS),
+    "tot_n_BS_strong" = sum(df$n_BS_strong),
+    "max_BS_scr" = ifelse(sum(df$n_BS)==0,NA,max(df$BS_scr_max))
+  )
+}) )
+nrow(all_dat) # should match nb distinct genes w/ peaks as reported in assignment script
+```
+
+
+### Now add this info to all (examined) genes
+```{r}
+all_dat <- merge(
+  as.data.frame(geneBody_gr)[,c("seqnames", "WBGeneID", "biotype","gene_name","transcript_name")],
+  all_dat,
+  by.x="WBGeneID", by.y="geneID",
+  all.x=T, all.y=F
+)
+addmargins(table("biot"=all_dat$biotype, "chr"=all_dat$seqnames))
+# all "examined" genes -> ie coding/miRNAs not on Mt
+```
+
+### Add on osc annotations
+```{r}
+all_dat <- merge(
+  all_dat, 
+  AllOsc_info,
+  by.x="WBGeneID", by.y="row.names",
+  all.x=T, all.y=F
+)
+nrow(all_dat)
+```
+
+
+### Prepare gene labels
+```{r}
+check_name <- function(x) { !is.na(x) & x!="" }
+
+all_dat$gene_label <- ifelse(
+  check_name(all_dat$gene_name), all_dat$gene_name, 
+  ifelse(
+    check_name(all_dat$transcript_name), all_dat$transcript_name, 
+    all_dat$WBGeneID
+  )
+)
+rownames(all_dat) <- all_dat$WBGeneID
+```
+
+
+### Show
+```{r}
+print(all_dat[,-1])
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Gene-level analysis: peaks only
+
+Look for enrichment in oscillatory genes, and furthermore in certain phases,
+amongst "target genes, these being defined as genes with assigned ChIP-seq peaks.
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Osc gene enrichment analysis (no FE thresh)
+
+```{r}
+target_osc_cross_tabulate <- function(
+    bTarget, bOsc=coerce_binary(all_dat$Amplitude>0) ) {
+  
+  stopifnot(length(bTarget)==length(bOsc))
+  table(
+    bTarget = bTarget,
+    bOsc    = bOsc
+  )
+  
+}
+
+tab <- target_osc_cross_tabulate(
+  bTarget=coerce_binary(all_dat$max_FE>0))
+print(addmargins(tab))
+print(fisher.test(tab))
+rm(tab)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Peak-gene CPDs as function of FE threshold
+
+
+### Establish FE threshold breakpoints
+Practical quantiles
+```{r}
+FE_percentiles <- prep_quantiles( all_dat$max_FE )
+```
+
+
+### Compile summaries of CPDs for FE thresholds
+```{r}
+res <- list()
+
+par(op) ; par(mar=c(4,4,1.5,0.5), mfrow=c(2,3))
+for (FE_thresh_n in names(FE_percentiles)) {
+
+  tab <- target_osc_cross_tabulate(
+    bTarget=coerce_binary(all_dat$max_FE>=FE_percentiles[FE_thresh_n]))
+  
+  ft <- fisher.test(tab, alternative = "greater")
+  pt <- prop.test(t(tab)[2:1,2:1], alternative = "greater") # prop target in non-osc vs prop target in osc
+  
+  res[[FE_thresh_n]] <- c(
+    "nbGs"          = sum(tab),
+    "nbTargetGs"    = sum(tab["TRUE",]),
+    "nbOscGs"       = sum(tab[,"TRUE"]),
+    "nbTargetOscGs" = sum(tab["TRUE","TRUE"]),
+    "OR"      = unname(ft$estimate),
+    "PR"      = unname(pt$estimate["prop 1"] / pt$estimate["prop 2"]),
+    "FT_pVal" = unname(ft$p.value),
+    "PT_pVal" = unname(pt$p.value)
+  )
+  
+} # <5s
+res <- as.data.frame(do.call(rbind, res))
+
+res$label      <- rownames(res)
+res$FE_thresh  <- FE_percentiles[ rownames(res) ]
+res$fracOscOfTar <- (res$nbTargetOscGs / res$nbTargetGs)
+res$fracTarOfOsc <- (res$nbTargetOscGs / res$nbOscGs)
+res$ml10_FT_pVal  <- -log10(res$FT_pVal)
+res$ml10_PT_pVal  <- -log10(res$PT_pVal)
+
+res
+
+rm(FE_thresh_n, tab, ft, pt)
+```
+
+
+### Nb genes, per FE threshold
+```{r fig.width=10, fig.height=5}
+# Nb [osc] genes per threshold
+g1 <- ggplot(data=res, aes_string(x="FE_thresh")) + #scale_y_log10() +
+  geom_hline(yintercept = c(0), color="grey20")+
+  geom_path(aes(y=nbGs,          color="all"))+
+  geom_path(aes(y=nbOscGs,       color="osc"), size=1)+
+  geom_path(aes(y=nbTargetGs,    color="w/ peak"))+
+  geom_path(aes(y=nbTargetOscGs, color="osc w/ peak"))+
+  scale_color_manual(name = "genes", values = c(
+    "all" = "black", "osc" = "darkblue", "w/ peak" = "red", "osc w/ peak"="purple")) +
+  geom_text_repel(aes_string(x="FE_thresh", y="nbGs", label="label"), max.overlaps=32) +
+  ggtitle("Nb genes hit ~ FE threshold") +
+  theme(legend.position = c(0.8, 0.8))
+
+# Frac osc per threshold
+g2 <- ggplot(data=res, aes_string(x="FE_thresh", y="fracOsc")) +
+  geom_hline(yintercept = c(0,1), color="grey20")+
+  geom_path(aes(y=fracOscOfTar, color="frac Osc of Tar"))+
+  geom_point(aes(y=fracOscOfTar, color="frac Osc of Tar"), size=1)+
+  geom_path(aes(y=fracTarOfOsc, color="frac Tar of Osc"))+
+  scale_color_manual(name = "genes", values = c(
+    "frac Osc of Tar" = "red", "frac Tar of Osc" = "blue")) +
+  geom_text_repel(aes_string(x="FE_thresh", y="fracOscOfTar", label="label"), max.overlaps=32) +
+  ggtitle("Fraction oscillatory genes hit ~ FE threshold")+
+  theme(legend.position = c(0.8, 0.8))
+
+grid.arrange(g1,g2,ncol=2)
+
+rm( g1, g2)
+```
+
+
+### OR & PR, across FE thresholds
+```{r fig.height=5, fig.width=10}
+  
+  # Enrichment OR & significance per threshold
+  g1 <- ggplot(data=res, aes_string(x="OR", y="ml10_FT_pVal")) +
+    geom_path(aes_string(color="FE_thresh"))+
+    geom_point(aes_string(color="FE_thresh")) +
+    geom_text_repel(aes_string(label="label"), max.overlaps = 20)+
+    ggtitle("Oscillatory gene enrichment ~ FE threshold", sub="Fisher test")+
+    theme(legend.position = c(0.2, 0.75)) +
+    geom_vline(xintercept = 1, col="darkgrey") +
+    geom_hline(yintercept = -log10(0.05), col="darkgrey", linetype="dashed")
+  
+  g2 <- ggplot(data=res, aes_string(x="PR", y="ml10_PT_pVal")) +
+    geom_path(aes_string(color="FE_thresh"))+
+    geom_point(aes_string(color="FE_thresh")) +
+    geom_text_repel(aes_string(label="label"), max.overlaps = 20)+
+    ggtitle("Oscillatory gene enrichment ~ FE threshold",sub="Proportions test")+
+    theme(legend.position = c(0.2, 0.75)) +
+    geom_vline(xintercept = 1, col="darkgrey") +
+    geom_hline(yintercept = -log10(0.05), col="darkgrey", linetype="dashed")
+  
+  grid.arrange(g1, g2, ncol=2)
+  
+
+rm(g1, g2)
+```
+
+
+### OR compared to PR
+```{r fig.height=4, fig.width=8}
+
+g1 <- ggplot(res, aes_string(x="OR", y="PR")) +
+  geom_hline(yintercept = 1)+ geom_vline(xintercept = 1)+
+  geom_path(aes_string(color="FE_thresh")) +
+  geom_point(aes_string(color="FE_thresh")) +
+  theme(legend.position = c(0.8, 0.35))
+g2 <- ggplot(res, aes_string(x="ml10_FT_pVal", y="ml10_PT_pVal")) +
+  geom_abline(slope=1, intercept = 0, col="white")+
+  geom_path(aes_string(color="FE_thresh")) +
+  geom_point(aes_string(color="FE_thresh")) +
+  theme(legend.position = "none")
+
+grid.arrange(g1, g2, ncol=2)
+
+rm( g1, g2)
+```
+
+
+### Clean up
+```{r}
+rm(res)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Phase enrichments from Peak-gene CPDs, per FE threshold
+
+### Set up enrichment analysis
+```{r}
+## wrapper
+wrap_PEA_barplot <- function(
+    
+  FE_thresh_n,
+  bin_seq = seq(0, 360, by=10)
+  
+  ) {
+  
+  PEA_res <- phase_enrichment_analysis(
+    bTarget = !is.na(all_dat$max_FE) & all_dat$max_FE>=FE_percentiles[FE_thresh_n],
+    bin_seq = bin_seq
+  ) 
+  # print(PEA_res)
+  plot_PEA_barplot(PEA_res) +
+    ggtitle(label = paste0("(FE>=", FE_thresh_n, ")"))
+}
+
+
+## phase bin definitions
+seq_configs <- list(
+  "by10" = seq(0, 360, by=10),
+  "by15" = seq(0, 360, by=15),
+  "by20" = seq(0, 360, by=20),
+  "by30" = seq(0, 360, by=30),
+  "by45" = seq(0, 360, by=45)
+)
+
+
+## FE thresholds to test
+selected_FE_threshs <- c(
+  "0%","50%","80%","95%","98%","99.5%","99.9%")
+
+
+## test
+wrap_PEA_barplot("60%", seq_configs[["by20"]])
+```
+
+
+### Show enrichments for various bins and FE thresholds
+```{r fig.width=25, fig.height=12}
+grobs <- list()
+for (seq_config_n in names(seq_configs)) {
+  for (FE_thresh_n in selected_FE_threshs) {
+    grobs[[length(grobs)+1]] <- wrap_PEA_barplot(
+      FE_thresh_n = FE_thresh_n,
+      bin_seq     = seq_configs[[seq_config_n]]
+    )
+  }
+} #<10s
+grid.arrange(
+  grobs=grobs, 
+  ncol=length(selected_FE_threshs), 
+  nrow=length(seq_configs)) #<10s
+rm(grobs)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Clean up
+```{r}
+rm(seq_configs,
+   FE_percentiles, FE_thresh_n, 
+   selected_FE_threshs, seq_config_n)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Gene-level analysis: peaks with strong sites
+
+Look for enrichment in oscillatory genes, and furthermore in certain phases,
+amongst "target genes, these being defined as genes with assigned ChIP-seq peaks,
+that also contain at least one "strong" binding site.
+
+NB: as such, using HOMER's score threshold.
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Osc gene enrichment analysis (no FE thresh)
+
+```{r}
+tab <- target_osc_cross_tabulate(
+  bTarget=coerce_binary(all_dat$max_FE>0 & all_dat$tot_n_BS_strong>0))
+print(addmargins(tab))
+print(fisher.test(tab))
+rm(tab)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Peak-gene CPDs as function of FE threshold
+
+
+### Establish FE threshold breakpoints
+Practical quantiles
+```{r}
+FE_percentiles <- prep_quantiles( all_dat$max_FE )
+```
+
+
+### Compile summaries of CPDs for FE thresholds
+```{r}
+res <- list()
+
+par(op) ; par(mar=c(4,4,1.5,0.5), mfrow=c(2,3))
+for (FE_thresh_n in names(FE_percentiles)) {
+
+  tab <- target_osc_cross_tabulate(
+    bTarget=coerce_binary(
+      all_dat$max_FE>=FE_percentiles[FE_thresh_n] & 
+        all_dat$tot_n_BS_strong>0))
+
+  ft <- fisher.test(tab, alternative = "greater")
+  pt <- prop.test(t(tab)[2:1,2:1], alternative = "greater") # prop target in non-osc vs prop target in osc
+  
+  res[[FE_thresh_n]] <- c(
+    "nbGs"          = sum(tab),
+    "nbTargetGs"    = sum(tab["TRUE",]),
+    "nbOscGs"       = sum(tab[,"TRUE"]),
+    "nbTargetOscGs" = sum(tab["TRUE","TRUE"]),
+    "OR"      = unname(ft$estimate),
+    "PR"      = unname(pt$estimate["prop 1"] / pt$estimate["prop 2"]),
+    "FT_pVal" = unname(ft$p.value),
+    "PT_pVal" = unname(pt$p.value)
+  )
+  
+} # <5s
+res <- as.data.frame(do.call(rbind, res))
+
+res$label      <- rownames(res)
+res$FE_thresh  <- FE_percentiles[ rownames(res) ]
+res$fracOscOfTar <- (res$nbTargetOscGs / res$nbTargetGs)
+res$fracTarOfOsc <- (res$nbTargetOscGs / res$nbOscGs)
+res$ml10_FT_pVal  <- -log10(res$FT_pVal)
+res$ml10_PT_pVal  <- -log10(res$PT_pVal)
+
+res
+
+rm(FE_thresh_n, tab, ft, pt)
+```
+
+
+### Nb genes, per FE threshold
+```{r fig.width=10, fig.height=5}
+# Nb [osc] genes per threshold
+g1 <- ggplot(data=res, aes_string(x="FE_thresh")) + #scale_y_log10() +
+  geom_hline(yintercept = c(0), color="grey20")+
+  geom_path(aes(y=nbGs,          color="all"))+
+  geom_path(aes(y=nbOscGs,       color="osc"), size=1)+
+  geom_path(aes(y=nbTargetGs,    color="w/ peak"))+
+  geom_path(aes(y=nbTargetOscGs, color="osc w/ peak"))+
+  scale_color_manual(name = "genes", values = c(
+    "all" = "black", "osc" = "darkblue", "w/ peak" = "red", "osc w/ peak"="purple")) +
+  geom_text_repel(aes_string(x="FE_thresh", y="nbGs", label="label"), max.overlaps=32) +
+  ggtitle("Nb genes hit ~ FE threshold") +
+  theme(legend.position = c(0.8, 0.8))
+
+# Frac osc per threshold
+g2 <- ggplot(data=res, aes_string(x="FE_thresh", y="fracOsc")) +
+  geom_hline(yintercept = c(0,1), color="grey20")+
+  geom_path(aes(y=fracOscOfTar, color="frac Osc of Tar"))+
+  geom_point(aes(y=fracOscOfTar, color="frac Osc of Tar"), size=1)+
+  geom_path(aes(y=fracTarOfOsc, color="frac Tar of Osc"))+
+  scale_color_manual(name = "genes", values = c(
+    "frac Osc of Tar" = "red", "frac Tar of Osc" = "blue")) +
+  geom_text_repel(aes_string(x="FE_thresh", y="fracOscOfTar", label="label"), max.overlaps=32) +
+  ggtitle("Fraction oscillatory genes hit ~ FE threshold")+
+  theme(legend.position = c(0.8, 0.8))
+
+grid.arrange(g1,g2,ncol=2)
+
+rm( g1, g2)
+```
+
+
+### OR & PR, across FE thresholds
+```{r fig.height=5, fig.width=10}
+  
+  # Enrichment OR & significance per threshold
+  g1 <- ggplot(data=res, aes_string(x="OR", y="ml10_FT_pVal")) +
+    geom_path(aes_string(color="FE_thresh"))+
+    geom_point(aes_string(color="FE_thresh")) +
+    geom_text_repel(aes_string(label="label"), max.overlaps = 20)+
+    ggtitle("Oscillatory gene enrichment ~ FE threshold", sub="Fisher test")+
+    theme(legend.position = c(0.2, 0.75)) +
+    geom_vline(xintercept = 1, col="darkgrey") +
+    geom_hline(yintercept = -log10(0.05), col="darkgrey", linetype="dashed")
+  
+  g2 <- ggplot(data=res, aes_string(x="PR", y="ml10_PT_pVal")) +
+    geom_path(aes_string(color="FE_thresh"))+
+    geom_point(aes_string(color="FE_thresh")) +
+    geom_text_repel(aes_string(label="label"), max.overlaps = 20)+
+    ggtitle("Oscillatory gene enrichment ~ FE threshold",sub="Proportions test")+
+    theme(legend.position = c(0.2, 0.75)) +
+    geom_vline(xintercept = 1, col="darkgrey") +
+    geom_hline(yintercept = -log10(0.05), col="darkgrey", linetype="dashed")
+  
+  grid.arrange(g1, g2, ncol=2)
+  
+
+rm(g1, g2)
+```
+
+
+### OR compared to PR
+```{r fig.height=4, fig.width=8}
+
+g1 <- ggplot(res, aes_string(x="OR", y="PR")) +
+  geom_hline(yintercept = 1)+ geom_vline(xintercept = 1)+
+  geom_path(aes_string(color="FE_thresh")) +
+  geom_point(aes_string(color="FE_thresh")) +
+  theme(legend.position = c(0.8, 0.35))
+g2 <- ggplot(res, aes_string(x="ml10_FT_pVal", y="ml10_PT_pVal")) +
+  geom_abline(slope=1, intercept = 0, col="white")+
+  geom_path(aes_string(color="FE_thresh")) +
+  geom_point(aes_string(color="FE_thresh")) +
+  theme(legend.position = "none")
+
+grid.arrange(g1, g2, ncol=2)
+
+rm( g1, g2)
+```
+
+
+### Clean up
+```{r}
+rm(res)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Phase enrichments from Peak-gene CPDs, for FE thresholds
+
+NB: not attempting to vary the score threshold here.
+
+
+### Set up enrichment analysis
+```{r}
+## wrapper
+wrap_PEA_barplot2 <- function(
+    
+  FE_thresh_n,
+  bin_seq = seq(0, 360, by=10)
+  
+  ) {
+  
+  PEA_res <- phase_enrichment_analysis(
+    bTarget = (!is.na(all_dat$max_FE) & (all_dat$max_FE>=FE_percentiles[FE_thresh_n])) & 
+      (!is.na(all_dat$tot_n_BS_strong) & (all_dat$tot_n_BS_strong>0)),
+    bin_seq = bin_seq
+  ) 
+  
+  plot_PEA_barplot(PEA_res) +
+    ggtitle(label = paste0("(", FE_thresh_n, " & strong site)"))
+}
+
+
+## phase bin definitions
+seq_configs <- list(
+  "by10" = seq(0, 360, by=10),
+  "by15" = seq(0, 360, by=15),
+  "by20" = seq(0, 360, by=20),
+  "by30" = seq(0, 360, by=30),
+  "by45" = seq(0, 360, by=45)
+)
+
+
+## FE thresholds to test
+selected_FE_threshs <- c(
+  "0%","50%","80%","95%","98%","99.5%","99.9%")
+
+
+## test
+wrap_PEA_barplot2("60%", seq_configs[["by20"]])
+```
+
+
+### Show enrichments for various bins and FE thresholds
+```{r fig.width=25, fig.height=12}
+grobs <- list()
+for (seq_config_n in names(seq_configs)) {
+  for (FE_thresh_n in selected_FE_threshs) {
+    grobs[[length(grobs)+1]] <- wrap_PEA_barplot2(
+      FE_thresh_n = FE_thresh_n,
+      bin_seq     = seq_configs[[seq_config_n]]
+    )
+  }
+} #<10s
+grid.arrange(
+  grobs=grobs, 
+  ncol=length(selected_FE_threshs), 
+  nrow=length(seq_configs)) #<10s
+rm(grobs)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Final selections
+
+### Define final selections
+```{r}
+seq_config_n = "by20"
+FE_thresh_ns = c("0%","60%","80%", "95%", "98%")
+
+cat(seq_config_n, paste0(FE_thresh_ns, collapse=", "), "\n")
+```
+
+Target genes to flag (if possible):
+```{r}
+print(all_dat[GoIs$geneID,])
+```
+
+Reminder:
+```{r}
+print(FE_percentiles[FE_thresh_ns])
+print(GRH1_HOMER_log2cut)
+```
+
+
+### Enrichment barplots for final selections
+```{r}
+for (FE_thresh_n in FE_thresh_ns) {
+  
+  g <- wrap_PEA_barplot2(
+    FE_thresh_n = FE_thresh_n,
+    bin_seq     = seq_configs[[seq_config_n]]
+  )  
+  print(g)
+  
+  # ggsave(
+  #   filename = paste0("PhaseEnrichments_",
+  #                     stringr::str_replace(FE_thresh_n,"%", ""),".PDF"),
+  #   path = file.path(".","OUTPUT"),
+  #   width = 5.5, height=4.5
+  # )
+}
+
+rm(FE_thresh_n, g)
+```
+
+
+### Enrichment RADAR plots for final selections
+```{r}
+wrap_PEA2_radar <- function(
+    
+  FE_thresh_n,
+  bin_seq = seq(0, 360, by=10) 
+  
+  ) {
+  
+  PEA_res <- phase_enrichment_analysis(
+    bTarget = !is.na(all_dat$max_FE) & all_dat$max_FE>=FE_percentiles[FE_thresh_n]  
+      & (!is.na(all_dat$tot_n_BS_strong) & (all_dat$tot_n_BS_strong>0)),
+    bin_seq = seq_configs[[seq_config_n]],
+  ) 
+  
+  plot_PEA_radar(PEA_res) +
+    ggtitle(label = paste0("(FE>=", FE_thresh_n, " & strong site)"))
+  
+}
+```
+
+```{r fig.width=4, fig.height=3}
+for (FE_thresh_n in FE_thresh_ns[1]) {
+  
+  g <- wrap_PEA2_radar(
+    FE_thresh_n = FE_thresh_n,
+    bin_seq     = seq_configs[[seq_config_n]]
+  ) 
+  print(g)
+  
+  # ggsave(
+  #   filename = paste0("PhaseEnrichments_",
+  #                     stringr::str_replace(FE_thresh_n,"%", ""),".PDF"),
+  #   path = file.path("..","PAPER"),
+  #   width = 4.5, height=5.5
+  # )
+}
+
+rm(FE_thresh_n, g)
+```
+
+
+### Density plots for final selections
+```{r}
+get_targets <- function(FE_thresh, BS_thresh=0) {
+  gene_peak_dat <- rownames(all_dat)[
+    (!is.na(all_dat$max_FE) & (all_dat$max_FE>=FE_thresh)) & 
+    (!is.na(all_dat$tot_n_BS_strong) & (all_dat$tot_n_BS_strong>BS_thresh))
+  ]
+}
+
+for (FE_thresh_n in FE_thresh_ns) {
+  
+  par(op) ; par(mar=c(4,4,1.5,0.5))
+  tmp <- phase_densities(
+    get_targets(FE_percentiles[[FE_thresh_n]]),
+    flag = GoIs$geneID)
+  title(paste0(
+    "targets: (FE>=", FE_thresh_n, ", strong BS>0)"
+  ))
+  
+  # pdf(file = file.path(
+  #   "..","PAPER",paste0(
+  #     "PhaseDensities_",
+  #     stringr::str_replace(FE_thresh_n,"%", ""),
+  #     ".PDF") ),
+  #   width = 5.5, height = 4.5, pointsize = 12)
+  # 
+  # par(op) ; par(mar=c(4,4,1.5,0.5))
+  # tmp <- phase_densities(
+  #   get_targets(FE_percentiles[[FE_thresh_n]]),
+  #   flag = GoIs$geneID)
+  # title(paste0(
+  #   "targets: (FE>=", FE_thresh_n, ", strong BS>0)"
+  # ))
+  # 
+  # invisible(dev.off())
+}
+
+rm(get_targets, FE_thresh_n, tmp)
+```
+
+
+For funsies: no binding motif threshold
+```{r}
+get_targets <- function(FE_thresh, BS_thresh=-1) {
+  gene_peak_dat <- rownames(all_dat)[
+    (!is.na(all_dat$max_FE) & (all_dat$max_FE>=FE_thresh)) & 
+    (!is.na(all_dat$tot_n_BS_strong) & (all_dat$tot_n_BS_strong>BS_thresh))
+  ]
+}
+
+for (FE_thresh_n in FE_thresh_ns) {
+  
+  par(op) ; par(mar=c(4,4,1.5,0.5))
+  tmp <- phase_densities(
+    get_targets(FE_percentiles[[FE_thresh_n]]),
+    flag = GoIs$geneID)
+  title(paste0(
+    "targets: (FE>=", FE_thresh_n,")"
+  ))
+
+}
+
+rm(get_targets, FE_thresh_n, tmp)
+```
+
+
+For funsies: higher binding motif threshold
+```{r}
+get_targets <- function(FE_thresh, BS_thresh=15) {
+  gene_peak_dat <- rownames(all_dat)[
+    (!is.na(all_dat$max_FE) & (all_dat$max_FE>=FE_thresh)) & 
+    (!is.na(all_dat$max_BS_scr) & (all_dat$max_BS_scr>BS_thresh))
+  ]
+}
+
+for (FE_thresh_n in FE_thresh_ns) {
+  
+  par(op) ; par(mar=c(4,4,1.5,0.5))
+  tmp <- phase_densities(
+    get_targets(FE_percentiles[[FE_thresh_n]]),
+    flag = GoIs$geneID)
+  title(paste0(
+    "targets: (FE>=", FE_thresh_n,", max score>=15)"
+  ))
+
+}
+
+rm(get_targets, FE_thresh_n, tmp)
+```
+
+
+Experimental: polar representation of densities:
+```{r fig.width=2.5, fig.height=2.5}
+get_targets <- function(FE_thresh, BS_thresh=0) {
+  gene_peak_dat <- rownames(all_dat)[
+    (!is.na(all_dat$max_FE) & (all_dat$max_FE>=FE_thresh)) & 
+    (!is.na(all_dat$tot_n_BS_strong) & (all_dat$tot_n_BS_strong>BS_thresh))
+  ]
+}
+
+for (FE_thresh_n in FE_thresh_ns) {
+  
+  par(op) ; par(mar=rep(1.5, 4))
+  
+  phase_densities_polar(
+    tmp <- phase_densities(
+      get_targets(FE_percentiles[[FE_thresh_n]]),
+      flag = GoIs$geneID,
+      do_plot = F, adjust = 0.5*(1/3)
+    )
+  ) 
+  title(main=paste0("(FE>=", FE_thresh_n,", strong BS>=0)"))
+    
+  
+  pdf(file = file.path(
+    "..","PAPER",paste0(
+      "PhaseDensities_",
+      stringr::str_replace(FE_thresh_n,"%", ""),
+      ".PDF") ),
+    width = 5.5, height = 4.5, pointsize = 12)
+
+    phase_densities_polar( tmp ) 
+    title(main=paste0("(FE>=", FE_thresh_n,", strong BS>=0)"))
+  
+  invisible(dev.off())
+  
+  
+}
+
+rm(get_targets, FE_thresh_n)#, g)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Clean up
+```{r}
+rm(seq_configs,
+   FE_percentiles, 
+   selected_FE_threshs, seq_config_n)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save all dat for Paper
+```{r}
+write.table(
+  all_dat,
+  file = file.path("..", "PAPER", "PhaseGenePeakMotifData.tsv"),
+  col.names = T, row.names = F, quote = F
+)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->

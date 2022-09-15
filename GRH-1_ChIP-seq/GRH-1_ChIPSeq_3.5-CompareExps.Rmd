@@ -1,0 +1,457 @@
+---
+title: "GRH-1 ChIP-seq: compare replicates"
+author: A. Alex T. SMITH, Milou MEEUSE
+date: 21/06/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+C.F. Milou's script:
+/tungstenfs/scratch/ggrossha/meeumilo/scripts/TF ChIP/ChIPseq2633_grh-1_hbl-1/2020-12-04 AssignPeaksToGenes/2020-12-04 2633R_AssignPeaksToGenes.R
+
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Support libraries
+This script requires the following packages to be installed:
+```{r}
+library('BSgenome.Celegans.UCSC.ce10')
+library(ggplot2)
+library(ggrepel)
+
+source("./support_assignment.R")
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Load Data
+
+### Previously-prepared GRH-1 ChIP-seq data
+```{r}
+# project objects for read counting
+load( file = file.path(".","RDATA","2587R-2633R_projs.RData"))
+
+# peak GRs
+load( file = file.path(".","RDATA","2587R-2633R_peaks.RData"))
+
+# prepared gene regions & data
+load( file = file.path(".","RDATA","ce10_gene_regions.RData"))
+```
+
+
+### Data from Milou
+```{r}
+# Milou's oscillating genes
+osc_dat <- tibble::column_to_rownames(
+  read.csv(file.path(".","DATA","AllOsc_info_CIclass.csv")), "X")
+
+# GJ Hendrick's list of oscilalting GFs
+osc_tf_IDs <- read.csv(
+  file.path("/tungstenfs", "scratch", "ggrossha", "meeumilo", "scripts", 
+            "FullDevTC", "2019-07-02 OscTF", "OscTF_determinedByGJH.csv"), 
+  header = F)[,1]
+```
+
+
+### Compile useful gene data
+```{r}
+gene_dat <- as.data.frame(mcols(geneBody_gr)[,c("WBGeneID","gene_name","transcript_name")])
+gene_dat <- merge(gene_dat, osc_dat, by.x="WBGeneID", by.y="row.names", all.x=T, all.y=F)
+gene_dat$label <- ifelse(
+  !is.na(gene_dat$gene_name) & gene_dat$gene_name!="", gene_dat$gene_name,
+  ifelse(
+    !is.na(gene_dat$transcript_name) & gene_dat$transcript_name!="", gene_dat$transcript_name,
+    gene_dat$WBGeneID))
+gene_dat$bOsc   <- !is.na(gene_dat$Phase)
+gene_dat$bOscTF <- (gene_dat$WBGeneID %in% osc_tf_IDs)
+
+# Note: not all osc TFs are classified as osc! 
+#       Likely due to being called by different analyses.
+# table( gene_dat[,c("bOscTF", "bOsc") ] )
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Prepare
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Select data and get combined peaks
+
+Milou compared:
+
+* 2587R: input vs ChIP_500mM 
+* 2633R_oldPopcorn2465R: input_GRH-1_old vs IP_GRH-1_old
+
+### Define sample pairings
+```{r}
+sample_pairs <- list(
+  "rep1" = c("input"="input_GRH-1_old", "IP"="IP_GRH-1_old", "peaks" = "2633R_old"),
+  "rep2" = c("input"="input",           "IP"="ChIP_500mM",   "peaks" = "2587R_500mM")
+)
+```
+
+
+### Grab relevant peaks
+```{r}
+peaks_gr1 <- peaks.gr.list[[sample_pairs[["rep1"]]["peaks"]]] # 3rd run, 1st set of samples
+peaks_gr2 <- peaks.gr.list[[sample_pairs[["rep2"]]["peaks"]]] # 2nd run, 2nd set of samples
+rm(peaks.gr.list)
+```
+
+
+### Combine peaks across replicates
+NB: combining peaks using reduce(), rather than using those derived from the combined MACS2 run,
+as it seemed a "little off" (in terms of reported FEs).
+```{r}
+peaks_gr_comb <- reduce(c(peaks_gr1, peaks_gr2))
+names(peaks_gr_comb) <- paste0("combo_peak_", 1:length(peaks_gr_comb)) 
+
+cat("Rep1 had ",length(peaks_gr1), " peaks,\n",
+    "Rep2 had ",length(peaks_gr2), " peaks,\n",
+    "Combo had ",length(peaks_gr_comb), " peaks.\n", sep="" )
+
+rm(peaks_gr1, peaks_gr2)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Quantify reads in combined peaks
+
+### QuasR qCount
+```{r}
+clObj <- makeCluster(20)
+peaks_gr_comb.cnt_2633 <- qCount(proj_2633, peaks_gr_comb, clObj=clObj) 
+peaks_gr_comb.cnt_2587 <- qCount(proj_2587, peaks_gr_comb, clObj=clObj) 
+stopCluster(clObj) ; rm(clObj)
+```
+
+
+### Save for later
+```{r}
+peaks_gr_comb.cnt <- cbind(
+  peaks_gr_comb.cnt_2587[,-1],
+  peaks_gr_comb.cnt_2633[,-1]
+)
+rownames(peaks_gr_comb.cnt) <- names(peaks_gr_comb)
+
+save(
+  peaks_gr_comb,
+  peaks_gr_comb.cnt,
+  file=file.path(".","RDATA","2587R-2633R_peaks_combined.RData"))
+
+# load( file=file.path(".","RDATA","2587R-2633R_peaks_combined.RData"))
+
+rm(peaks_gr_comb.cnt_2587, peaks_gr_comb.cnt_2633 )
+```
+
+
+### Normalise library sizes
+Get all total mapped read counts:
+```{r}
+alnstats <- rbind(alnstats_2587, alnstats_2633)
+rownames(alnstats) <- gsub(":genome","",rownames(alnstats))
+
+rm(alnstats_2587, alnstats_2633)
+```
+
+Select necessary sample columns and normalise to smallest libsize:
+```{r}
+peaks_gr_comb.cnt <- peaks_gr_comb.cnt[
+  ,unlist(lapply(sample_pairs, function(p) {p[c("input","IP")]}))]
+
+# libsizes <- colSums(peaks_gr_comb.cnt)
+libsizes <- alnstats[colnames(peaks_gr_comb.cnt),"mapped"]
+
+peaks_gr_comb.norm <- as.data.frame(sweep(
+  peaks_gr_comb.cnt, MARGIN = 2, STATS = min(libsizes) / libsizes, FUN = "*"))
+
+peaks_gr_comb.norm <- log2(peaks_gr_comb.norm + 8)
+
+rm(libsizes, peaks_gr_comb.cnt)
+```
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Quantify reads in combined peaks
+
+```{r}
+for (rep_n in names(sample_pairs)) {
+  peaks_gr_comb.norm[,paste0(rep_n,"_FE")] <-
+    peaks_gr_comb.norm[,sample_pairs[[rep_n]]["IP"]] -
+    peaks_gr_comb.norm[,sample_pairs[[rep_n]]["input"]]
+}
+rm(rep_n)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Assign peaks to genes
+
+### Hits to promoters
+```{r}
+ar_res_prom <- assign_ranges(
+  queries = peaks_gr_comb, subjects = geneProm_gr, 
+  assign_type = "overlap", 
+  query_IDs = "peakID", subject_IDs = "geneID",
+  query_dist_type = "range", subject_dist_type = "end",
+  select = "all"
+)
+
+assign_ranges_QC(ar_res_prom, peaks_gr_comb, geneProm_gr )
+
+cat( length(unique(to(ar_res_prom))), "/", queryLength(ar_res_prom), " peaks assigned to ",
+     length(unique(from(ar_res_prom))), "/", subjectLength(ar_res_prom), " genes using ",
+     length(ar_res_prom), " CPDs.\n", sep="")
+```
+
+
+### Hits to promoters
+```{r}
+ar_res_body <- assign_ranges(
+  queries = peaks_gr_comb, subjects = geneBody_gr, 
+  assign_type = "overlap", 
+  query_IDs = "peakID", subject_IDs = "geneID",
+  query_dist_type = "range", subject_dist_type = "start",
+  select = "all"
+)
+
+assign_ranges_QC(ar_res_body, peaks_gr_comb, geneBody_gr)
+
+# filter a bit
+ar_res_body <- ar_res_body[ abs(mcols(ar_res_body)$distance) <= 40000 ]
+
+cat( length(unique(to(ar_res_body))), "/", queryLength(ar_res_body), " peaks assigned to ",
+     length(unique(from(ar_res_body))), "/", subjectLength(ar_res_body), " genes using ",
+     length(ar_res_body), " CPDs.\n", sep="")
+```
+
+
+### Hits upstream
+```{r}
+ar_res_up <- assign_ranges(
+  queries = peaks_gr_comb, subjects = geneProm_gr,  
+  assign_type = "precede", 
+  query_IDs = "peakID", subject_IDs = "geneID",
+  query_dist_type = "range", subject_dist_type = "start",
+  select = "all"
+)
+
+assign_ranges_QC(ar_res_up, peaks_gr_comb, geneProm_gr)
+
+# filter a bit
+ar_res_up <- ar_res_up[ abs(mcols(ar_res_up)$distance) <= 30000 ]
+
+cat( length(unique(to(ar_res_up))), "/", queryLength(ar_res_up), " peaks assigned to ",
+     length(unique(from(ar_res_up))), "/", subjectLength(ar_res_up), " genes using ",
+     length(ar_res_up), " CPDs.\n", sep="")
+```
+
+
+### Compile
+```{r}
+ar_res_all <- rbind(
+  mcols(ar_res_prom), 
+  mcols(ar_res_body), 
+  mcols(ar_res_up) )
+
+rm(ar_res_prom, ar_res_body, ar_res_up)
+```
+NB: we will handle (peak, gene) unicity when selecting 1 peak per gene
+
+
+### Select 1 peak per gene
+```{r}
+# get peak enrichment values
+ar_res_all <- as.data.frame(merge(
+  ar_res_all, peaks_gr_comb.norm[,c("rep1_FE","rep2_FE")],
+  by.x="peakID", by.y="row.names",
+  all.x=F, all.y=F))
+
+# select one peak per gene
+print(system.time({
+  tmp <- split(ar_res_all, ar_res_all$geneID)
+  tmp <- lapply(tmp, function(cpd) {
+    if (nrow(cpd)==1) return(cpd[,c("peakID", "geneID")])
+    # order by sum of FEs => select CPDs closest to diagonal in rep comparison plot
+    # then order by distance => deals w/ unicity
+    cpd <- cpd[order(
+      cpd[,"rep1_FE"] + cpd[,"rep2_FE"], 
+      -1 * abs(cpd$distance), decreasing = T),]
+    return(cpd[1,c("peakID", "geneID")])
+  })
+  ar_res_all <- as.data.frame(data.table::rbindlist(
+    tmp, use.names = F))
+}))
+
+rm(tmp)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Putting it all together
+
+### Save for elsewhere
+```{r}
+save(
+  peaks_gr_comb.norm,
+  ar_res_all,
+  gene_dat,
+  file = file.path(".", "RDATA", "ComboPeaksComp.RData")
+)
+```
+
+
+### merge together
+```{r}
+## start with peak values
+dat4gg <- peaks_gr_comb.norm
+
+
+## add in CPDs w/ genes
+# print(nrow(dat4gg))
+dat4gg <- merge(
+  dat4gg, ar_res_all,
+  by.x="row.names", by.y="peakID",
+  all.x=T, all.y=F) # NB: one peak can match to 0-n genes
+# print(nrow(dat4gg))
+
+
+## add in gene data
+dat4gg <- merge(
+  dat4gg, gene_dat, 
+  by.x="geneID", by.y="WBGeneID",
+  all.x=T, all.y=F)
+# print(nrow(dat4gg))
+
+
+### finalise
+dat4gg <- as.data.frame(dat4gg)
+colnames(dat4gg)[colnames(dat4gg)=="Row.names"] <- "peakID"
+```
+
+
+### prepare
+```{r}
+dat4gg$avg_FE <- rowMeans(
+  dat4gg[,grep("rep[0-9]_FE", colnames(dat4gg), value=T)])
+
+dat4gg$bHiConf <- (dat4gg$avg_FE>=1)
+# dat4gg$bHiConf <- apply(dat4gg[,grep("_FE", colnames(dat4gg), value=T)]>=1, 1, all)
+
+dat4gg$type <- ifelse(
+  !is.na(dat4gg$geneID), 
+  ifelse(
+    dat4gg$bOscTF, "OscTF", 
+    ifelse(
+      dat4gg$bHiConf, "Gene HiConf", "Gene LowConf")),
+  ifelse(
+    dat4gg$bHiConf, "NoGene HiConf", "NoGene LowConf"
+  )
+)
+type_pal <- c(
+  "OscTF" = "red",
+  "Gene HiConf" = "blue",
+  "Gene LowConf" = "black",
+  "NoGene HiConf" = "lightblue", 
+  "NoGene LowConf" = "grey"
+)
+dat4gg$type <- factor(dat4gg$type, levels=names(type_pal))
+dat4gg <- dat4gg[order(dat4gg$type, decreasing = T),]
+
+tab <- table(dat4gg$type, useNA = "ifany")
+levels(dat4gg$type) <- paste0(levels(dat4gg$type), " (",tab[levels(dat4gg$type)],")")
+names(type_pal) <- levels(dat4gg$type)
+
+dat4gg$plot_label <- ifelse(
+  !is.na(dat4gg$bOscTF) & dat4gg$bOscTF & (dat4gg$rep1_FE>=1 | dat4gg$rep2_FE>=1) ,
+  dat4gg$label, ""
+)
+```
+
+
+### plot
+```{r fig.width=4.3, fig.height=3}
+ggplot( dat4gg, aes_string(x="rep2_FE", y="rep1_FE")) +
+  geom_hline(yintercept = 0) + geom_vline(xintercept = 0) +
+  # geom_abline(intercept = 0, slope = 1, color="darkgrey") +
+  geom_point(aes_string(color="type"), shape=16, size=0.85, alpha=1) +
+  scale_color_manual(values = type_pal) +
+  geom_text_repel(
+    aes_string(label="plot_label"), 
+    color="red",
+    box.padding=0.35, min.segment.length=0.1, 
+    size=3,
+    max.overlaps=Inf,
+    show.legend=F) + 
+  xlab("Enrichment in rep2 (log2)") + ylab("Enrichment in rep1 (log2)") +
+  theme_bw() + theme( text = element_text(size = 8),
+                      plot.title = element_text(size = 9) ) +
+  guides(color=guide_legend(title="Peak/Gene overlap")) +
+  ggtitle(label = paste0(
+            length(unique(dat4gg$peakID)), " peaks", " / ",
+            length(unique(dat4gg$geneID)), " genes"))
+
+ggsave(
+  filename = "ComboPeaksCompare.pdf",
+  device = "pdf", 
+  path = file.path(".", "OUTPUT") , 
+  width = 5.3, # extra-wide, but keep in mind we'll hack the legend off
+  height=3, units = "in", dpi=300, 
+  pointsize=8 )
+```
+
+
+### Who's the top hit?
+```{r}
+dat4gg[dat4gg$rep2_FE>3 & dat4gg$rep1_FE>3,]
+```
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Save
+```{r}
+save(
+  sample_pairs,
+  peaks_gr_comb,
+  peaks_gr_comb.norm,
+  ar_res_all,
+  gene_dat,
+  file = file.path(".", "RDATA", "2587R-2633R_peaks_combined_genes.RData")
+)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->

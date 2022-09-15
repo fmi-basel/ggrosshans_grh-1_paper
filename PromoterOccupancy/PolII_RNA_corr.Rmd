@@ -1,0 +1,679 @@
+---
+title: "GRH-1 pol-II ChIP-seq stuff"
+author: Milou MEEUSE, A. Alex T. SMITH
+date: 01/06/2022
+output: 
+  html_notebook:
+    toc: true
+    theme: united
+---
+
+
+Get pol-II ChIP-seq TC data & RNA-seq TC data,
+build heatmap for both,
+calculate correlations bw TCs.
+
+
+
+CF https://github.com/fmi-basel/ggrosshans_blmp1_paper/blob/master/RNAPII/2020-05-18%20Analysis_ExprHeatmaps/2020-05-18%20Analysis_RNAseq_ChIPseq.R
+
+<!-- Notes on Dimos' matrix naming:
+TL: log-transformed
+E: restricted to "expressed"
+D: "differential", as in mean-centered -->
+
+
+
+
+<!-- ======================================================================= -->
+# Set Up
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Dependencies
+```{r}
+op <- par(no.readonly = T)
+
+library(stringr)
+library(NMF)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Load data
+
+### Source directories
+```{r}
+RNA_polII_dir <- file.path(
+  "/tungstenfs","scratch","ggrossha","meeumilo","scripts",
+  "ggrosshans_blmp1_paper","RNAPII")
+RNA_polII_dir_old <- file.path(
+  "/work","gbioinfo","carlsara","grosshans","milou",
+  "polII_timecourse"
+)
+RNA_seq_dir_old <- file.path(
+  "/work2","ggrossha","milou","RNAseq1314"
+)
+```
+
+
+### load RNA Pol-II ChIP-seq data
+
+Data prepared with script:
+/tungstenfs/scratch/ggrossha/meeumilo/scripts/ggrosshans_blmp1_paper/RNAPII/2019-04-24 RNAseq1314R_Align_Count/2019-04-24\ Expression_mRNA_intron.R 
+
+But this script is essentially just pulling the data from another location:
+/work/gbioinfo/carlsara/grosshans/milou/polII_timecourse/polII_TSS_1kb_quantile_norm.tab
+
+This data was prepared by script:
+/work/gbioinfo/carlsara/grosshans/milou/polII_timecourse/polII_timecourse_analysis.R
+
+This script counts hits to 1kb regions centered on putative TSSs (ie that of the combined "gene body"), from samples of Run 899 aligned to ce10.
+Counts are reported per gene, library-size normalised (min lib size, 
+lib size from project alignment stats), log2-transformed w/ a pseudocount of 8, 
+filtered to "expressed" genes (mean>3), then quantile normalised.
+Only counts for the pull-down samples (ie "polII", ie not input) are kept, 22h-33h.
+
+```{r}
+TL_ChIP <- read.table(
+  file.path(RNA_polII_dir, '2019-04-24 RNAseq1314R_Align_Count','2019-04-24 ChIP_TL.csv'), 
+  row.names = 1, sep=',', header=TRUE)
+colnames(TL_ChIP) <- 
+  str_replace(
+    str_replace(colnames(TL_ChIP), "^X", ""),
+    "_polII", ""
+  )
+```
+
+
+### Bonus: alignment stats
+```{r}
+align_stats <- read.csv(
+  file.path(RNA_polII_dir_old, "alignmentStats.csv") )
+align_stats <- tibble::column_to_rownames(align_stats, "X")
+rownames(align_stats) <- str_replace_all(rownames(align_stats), ":genome", "")
+align_stats <- align_stats[                      # only keep polII samples
+  str_detect(rownames(align_stats), "_polII"),]  # (input samples were not used in these scripts)
+align_stats[,"nb_reads"] <- rowSums(align_stats[,c("mapped","unmapped")])
+align_stats[,"pMap"] <- round(100 * align_stats[,"mapped"] / align_stats[,"nb_reads"], 3)
+
+align_stats_ChIP <- align_stats ; rm(align_stats)
+print(align_stats_ChIP)
+
+write.table(
+  tibble::rownames_to_column(align_stats_ChIP,"sampleID"),
+  file = file.path(".","OUTPUT","PolII-alignment-stats.tsv"), 
+  quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+### load RNA-seq data
+
+Data prepared with script:
+/tungstenfs/scratch/ggrossha/meeumilo/scripts/ggrosshans_blmp1_paper/RNAPII/2019-04-24 RNAseq1314R_Align_Count/2019-04-24\ Expression_mRNA_intron.R 
+
+But the work files are here:
+/work2/ggrossha/milou/RNAseq1314
+
+This script counts hits to gene exons, from samples of RNA-seq run 1314 aligned to ce10.
+Counts are aggregated to gene-level by qCount, library-size normalised 
+(mean lib size, lib size from summed hit counts), log2-transformed w/ a pseudocount of 8.
+
+```{r}
+TL_RNA <- read.table(
+  file.path(RNA_polII_dir, '2019-04-24 RNAseq1314R_Align_Count','2019-04-24 mRNA_TL.csv'), 
+  row.names = 1, sep=',', header=TRUE)
+colnames(TL_RNA) <- 
+    str_replace(colnames(TL_RNA), "^X", "")
+
+# by default, enforce common gene order
+stopifnot(all( rownames(TL_ChIP) %in% rownames(TL_RNA) ))
+stopifnot(all( rownames(TL_RNA) %in% rownames(TL_ChIP) ))
+TL_RNA <- TL_RNA[rownames(TL_ChIP),]
+```
+
+
+### Bonus: alignment stats
+```{r}
+align_stats <- read.csv(
+  file.path(RNA_seq_dir_old, "alignmentStats.csv") )
+align_stats <- tibble::column_to_rownames(align_stats, "X")
+rownames(align_stats) <- str_replace_all(rownames(align_stats), ":genome", "")
+align_stats[,"nb_reads"] <- rowSums(align_stats[,c("mapped","unmapped")])
+align_stats[,"pMap"] <- round(100 * align_stats[,"mapped"] / align_stats[,"nb_reads"],3)
+
+align_stats_RNA <- align_stats ; rm(align_stats)
+print(align_stats_RNA)
+
+write.table(
+  tibble::rownames_to_column(align_stats_RNA,"sampleID"),
+  file = file.path(".","OUTPUT","mRNA-alignment-stats.tsv"), 
+  quote = F, sep = "\t", row.names = F, col.names = T)
+```
+
+
+### Gene names
+```{r}
+gene_info <- read.table(
+  file.path("/tungstenfs","scratch","ggrossha","meeumilo","scripts",
+            "FullDevTC","geneIDs.WS220"), 
+  sep=',', row.names=1, header=F)
+colnames(gene_info) <- c("symbol", "transcript")
+```
+
+
+### osc gene annotation
+```{r}
+AllOsc_info <- read.table(
+  file.path("/tungstenfs","scratch","ggrossha","meeumilo","scripts",
+            "FullDevTC","2019-01-31 AllOsc_info_CIclass.csv"), 
+  sep=',', row.names=1, header=T)
+```
+
+
+### Clean up
+```{r}
+rm(RNA_polII_dir , RNA_polII_dir_old ,RNA_seq_dir_old )
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## "Expressed" and "occupied" gene subsets
+
+Genes can:
+
+* be expressed: mRNA levels & variance sufficient.
+* be occupied: have their promoters occupied by RNA pol-II at sufficient levels & stability.
+
+
+### Helper
+```{r}
+calc_behaviour <- function(mat) {
+  behav <- as.data.frame(t(apply(mat, 1, function(x) { c("mean"=mean(x), "sd"=sd(x)) })))
+  behav$cv <- behav$sd / behav$mean
+  behav
+}
+```
+
+
+### Behaviours: mRNA
+```{r fig.width=8, fig.height=4}
+# Milou's old version:
+# expressed_gIDs <- rownames(read.table(
+#   file.path(RNA_polII_dir, '2019-04-24 RNAseq1314R_Align_Count','2019-04-24 mRNA_TLE.csv'), 
+#   row.names = 1, sep=',', header=TRUE))
+
+behav <- calc_behaviour(TL_RNA)
+par(op) ; par(mfrow=c(1,2), mar=c(4,4,1.5,0.5))
+plot(behav[,c("mean","sd")], col="darkblue", main="RNA-seq")
+plot(behav[,c("mean","cv")], col="darkblue")
+sapply(behav, quantile, probs=c(0,0.25,0.33,0.50,0.75,1.0))
+expressed_gIDs <- rownames(behav)[ (behav$mean>3.05) & (behav$cv>0.005)]
+
+behav_rna <- behav
+```
+
+
+### Behaviours: RNA Pol-II occupancy
+```{r fig.width=8, fig.height=4}
+behav <- calc_behaviour(TL_ChIP)
+par(op) ; par(mfrow=c(1,2), mar=c(4,4,1.5,0.5))
+plot(behav[,c("mean","sd")], col="darkblue", main="RNA Pol-II ChIP-seq")
+plot(behav[,c("mean","cv")], col="darkblue")
+sapply(behav, quantile, probs=c(0,0.001,0.005, 0.01,0.05,0.10,0.25,0.33,0.50,0.75,1.0))
+occupied_gIDs <- rownames(behav)[ (behav$mean>3.5) & (behav$cv>0.000)]
+
+behav_chip <- behav
+```
+
+
+### Compare
+```{r}
+addmargins(table(
+  "expressed" = rownames(TL_RNA) %in% expressed_gIDs,
+  "occupied"  = rownames(TL_RNA) %in% occupied_gIDs
+))
+```
+=> Most genes' promoters are occupied to a minimum average level/variability across the TC,
+while about half of those are "expressed" to minimum avg level/variability.  
+=> Moving fwd, we can just use "expressed_gIDs" as the more restrictive filter.
+
+
+### Clean up
+```{r}
+rm(calc_behaviour, behav)
+gc()
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Generate heatmaps of polII and gene expression for osc genes
+
+<!-- ----------------------------------------------------------------------- -->
+## Prepare 
+
+### Select genes
+Select gene IDs for which we have expression & pol-II data,
+for genes that oscillate selon old annotation (on full dev TC)
+(note: no restricting to occupied/expressed genes as defined above).
+```{r}
+osc_gIDs <- intersect(
+  intersect(rownames(TL_RNA), rownames(TL_ChIP)), rownames(AllOsc_info))
+
+# order genes by oscillation phase
+osc_gIDs <- osc_gIDs[order(AllOsc_info[osc_gIDs,2])]
+
+print(length(osc_gIDs))
+```
+
+
+### Helper functions
+```{r}
+mean_center_genes <- function(mat) {
+  mat <- as.matrix(mat)
+  mat - rowMeans(mat) }
+
+sym_thresh <- function(mat, thresh=2) {
+  pmax(pmin(mat,thresh),-1*thresh) }
+
+sym_breaks <- function(thresh=2, nbreaks=256) {
+  seq(-1*thresh,thresh, length=nbreaks) }
+
+sym_thresh_hm <- function(mat, thresh=2, nbreaks=51, ...) {
+  aheatmap(
+    sym_thresh(mat,thresh=thresh), 
+    Rowv=NA, Colv=NA, breaks=sym_breaks(thresh=thresh, nbreaks=nbreaks), 
+    # color=c("cyan","blue","darkblue","grey20","darkred","red","magenta"),
+    color=paste0("-RdBu:", nbreaks),
+    labRow = NA, ...)
+}
+```
+
+
+### Value histograms
+To help select hard thresholding on heatmap values & defining colour palettes.
+```{r}
+par(op) ; par(mfrow=c(2,1), mar=c(4,4,1.5,0.5))
+TL_MC_ChIP_osc <- mean_center_genes(TL_ChIP[osc_gIDs,])
+hist(TL_MC_ChIP_osc, breaks=128)
+
+TL_MC_RNA_osc <- mean_center_genes(TL_RNA[osc_gIDs,])
+hist(TL_MC_RNA_osc, breaks=128)
+```
+=> Range of occupancy Z-scores is tighter than that of expression Z-scores.
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Heatmaps
+```{r fig.width=7, fig.height=7}
+par(mfrow=c(1,2))
+sym_thresh_hm(
+  TL_MC_ChIP_osc, thresh=1, main = 'Promoter Occupancy')
+
+sym_thresh_hm(
+  TL_MC_RNA_osc, thresh=3, main = 'mRNA expression')
+```
+
+To file:
+```{r}
+sym_thresh_hm(
+  round(TL_MC_ChIP_osc,5), thresh=1, main = 'Promoter Occupancy',
+  filename = file.path("..", "PAPER", "Heatmap_osc_PolII.pdf"),
+  width=3.75, height=7, fontsize=8)
+
+write.table(
+  round(TL_MC_RNA_osc,5), file.path("..","PAPER","Heatmap_osc_PolII.tsv"),
+  row.names = T, col.names = T, quote = F
+)
+
+sym_thresh_hm(
+  round(TL_MC_ChIP_osc,5), thresh=3, main = 'mRNA expression',
+  filename = file.path("..", "PAPER", "Heatmap_osc_mRNA.pdf"),
+  width=3.75, height=7, fontsize=8)
+
+write.table(
+  round(TL_MC_RNA_osc,5), file.path("..","PAPER","Heatmap_osc_mRNA.tsv"),
+  row.names = T, col.names = T, quote = F
+)
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Promoter Occupancy vs Expression correlations
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Calculate gene-gene correlations
+
+Spearman correlations of Promoter Occupancy (Pol-II ChIP-seq sl2 levels) and 
+Expression (RNA-seq sl2 levels) across the same TC.
+
+```{r}
+library(doParallel)
+library(foreach)
+split_vec <- function(x, block_len) {
+  split(x, ceiling(seq_along(x)/block_len))
+}
+
+blocks <- split_vec(rownames(TL_RNA), 500)
+
+registerDoParallel(16)
+
+res <- foreach(block=blocks, .combine = rbind) %dopar% {
+  res <- rep(NA, length(block)) ; names(res) <- block
+  for (gID in block) {
+    res[gID] <- cor( 
+      x=t(TL_ChIP[gID,]), y=t(TL_RNA[gID,]),
+      use="everything", method="spearman" )[1,1]
+    # note: can still be NA for genes w/ constant values 
+    #       across one or other measure
+  }
+  data.frame(
+    "corr"   = res
+  )
+} # a few secs
+
+stopImplicitCluster()
+
+rm(blocks)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Examine correlation distributions
+
+### Histograms
+```{r fig.width=4, fig.height=4}
+rm_RNA  <- rowMeans(TL_RNA)
+rm_ChIP <- rowMeans(TL_ChIP)
+
+par(op) ;par(mfrow=c(3,2), mar=c(4,4,1.5,0.5))
+hist(rm_RNA, breaks=128, xlim=c(3,17))
+hist(rm_ChIP, breaks=128, xlim=c(3,17))
+hist(rm_RNA[expressed_gIDs], breaks=128, xlim=c(3,17))
+hist(rm_ChIP[occupied_gIDs], breaks=128, xlim=c(3,17))
+hist(rm_RNA[osc_gIDs], breaks=128, xlim=c(3,17))
+hist(rm_ChIP[osc_gIDs], breaks=128, xlim=c(3,17))
+
+rm(rm_RNA, rm_ChIP)
+```
+
+
+### Histograms
+```{r fig.width=4, fig.height=6}
+corr_hist <- function( vals, main="", xlab="Spearman correlation" ) {
+  m <- mean(vals, na.rm=T)
+  hist(
+    vals, breaks=128, xlim=c(-1,1), 
+    xlab=xlab, main=main,
+    sub=paste0("n = ", length(vals), " ; ",
+               "mean = ", round(m, 3)) 
+  )
+  abline(v=m, col="blue")
+  abline(v=0, col="grey20")
+}
+par(op) ;par(mfrow=c(4,1), mar=c(5,4,1.5,0.5))
+corr_hist(res[,"corr"],               "all genes")
+corr_hist(res[expressed_gIDs,"corr"], "expressed genes")
+corr_hist(res[occupied_gIDs,"corr"],  "occupied promoters")
+corr_hist(res[osc_gIDs,"corr"],       "osc genes")
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Per-gene results table
+
+### Prepare table
+```{r}
+res_table <- data.frame(
+  
+  row.names = rownames(TL_RNA),
+  
+  gene_info[rownames(TL_RNA),],
+  
+  "mean_expr"   = behav_rna[rownames(TL_RNA),"mean"],
+  "CV_expr"     = behav_rna[rownames(TL_RNA),"cv"],
+  "bExpressed"  = rownames(TL_RNA) %in% expressed_gIDs,
+  
+  "mean_chip"   = behav_chip[rownames(TL_RNA),"mean"],
+  "CV_chip"     = behav_chip[rownames(TL_RNA),"cv"],
+  "bOccupied"   = rownames(TL_RNA) %in% occupied_gIDs,
+  
+  "bOscMeeuse20" = rownames(TL_RNA) %in% osc_gIDs,
+  "oscAmpl"      = NA,
+  "oscPhase"     = NA,
+  
+  "corr" = res[rownames(TL_RNA),"corr"]
+  
+)
+res_table[rownames(AllOsc_info),"oscAmpl"]  <- AllOsc_info$Amplitude
+res_table[rownames(AllOsc_info),"oscPhase"] <- AllOsc_info$Phase
+
+rm(res)
+```
+
+
+### Oscillating genes whose expression doesn't correlate to promoter occupancy
+
+```{r}
+osc_no_corr <- rownames(subset(
+  res_table[ order(res_table$oscPhase)  ,],
+  bExpressed & bOccupied & bOscMeeuse20 & abs(corr)<=0.05
+))
+
+print(res_table[osc_no_corr,])
+```
+
+```{r fig.width=7, fig.height=5.5}
+par(mfrow=c(1,2))
+sym_thresh_hm(
+  TL_MC_ChIP_osc[osc_no_corr,], thresh=1, main = 'Promoter Occupancy')
+
+sym_thresh_hm(
+  TL_MC_RNA_osc[osc_no_corr,], thresh=3, main = 'mRNA expression')
+```
+
+
+### Oscillating genes whose expression anti-correlates to promoter occupancy
+```{r fig.width=10, fig.height=6}
+osc_anti_corr <- rownames(subset(
+  res_table[ order(res_table$oscPhase)  ,],
+  bExpressed & bOccupied & bOscMeeuse20 & corr< -0.5
+))
+
+print(res_table[osc_anti_corr,])
+```
+
+
+```{r}
+par(mfrow=c(1,2))
+sym_thresh_hm(
+  TL_MC_ChIP_osc[osc_anti_corr,], thresh=1, main = 'Promoter Occupancy')
+
+sym_thresh_hm(
+  TL_MC_RNA_osc[osc_anti_corr,], thresh=3, main = 'mRNA expression')
+```
+
+
+### Oscillating genes whose expression strongly correlates to promoter occupancy
+```{r}
+osc_hi_corr <- rownames(subset(
+  res_table[ order(res_table$oscPhase)  ,],
+  bExpressed & bOccupied & bOscMeeuse20 & corr>=0.50
+))
+print(res_table[osc_hi_corr,])
+```
+
+```{r fig.width=10, fig.height=6}
+par(mfrow=c(1,2))
+sym_thresh_hm(
+  TL_MC_ChIP_osc[osc_hi_corr,], thresh=1, main = 'Promoter Occupancy')
+
+sym_thresh_hm(
+  TL_MC_RNA_osc[osc_hi_corr,], thresh=3, main = 'mRNA expression')
+```
+
+
+### Compare distributions of metrics bw sets of genes
+```{r}
+# helper
+my_hist <- function(df, rIDs, coln, breaks=128, xlim=NULL, main="") {
+  breaks <- min(2*sum(!is.na(df[rIDs,coln])), breaks) 
+  if (is.null(xlim))
+    xlim <- range(df[rIDs,coln], na.rm=T)
+  hist(
+    df[rIDs,coln], breaks=breaks, xlim=xlim, 
+    xlab=coln, main=main, sub=paste( sum(!is.na(df[rIDs,coln])), "genes" ))
+  abline(v=mean(df[rIDs,coln], na.rm=T), col="blue", lty="dashed")
+}
+
+# gene sets
+gene_sets <- list(
+  "osc_all"       = osc_gIDs,
+  "osc_no_corr"   = osc_no_corr,
+  "osc_anti_corr" = osc_anti_corr,
+  "osc_hi_corr"   = osc_hi_corr
+)
+```
+
+```{r fig.width=4, fig.height=5}
+for (vn in c( "mean_expr",  "oscAmpl", "oscPhase")) {
+  if (vn=="oscPhase") {
+    xlim <- c(0, 360)
+  } else {
+    xlim <- range(res_table[,vn], na.rm=T)
+  }
+  par(op) ; par(mfrow=c(length(gene_sets),1))
+  for (n in names(gene_sets)) {
+    my_hist(res_table, gene_sets[[n]], vn, xlim=xlim, main=n)
+  }
+}
+rm(vn, xlim)
+```
+
+
+For paper:
+```{r}
+library(svglite)
+for (vn in c( "mean_expr",  "oscAmpl"#, "oscPhase"
+              )) {
+  # if (vn=="oscPhase") {
+  #   xlim <- c(0, 360)
+  # } else {
+    xlim <- range(res_table[,vn], na.rm=T)
+  # }
+  svglite( file.path("..", "PAPER", paste0("osc-genes-", vn, ".svg")),
+       width=3.5, height=7, pointsize=12)
+  par(op) ; par(mfrow=c(length(gene_sets),1), mar=c(5,4,1.25,0.25))
+  for (n in names(gene_sets)) {
+    my_hist(res_table, gene_sets[[n]], vn, xlim=xlim, main=n)
+  }
+  dev.off()
+}
+rm(vn, xlim)
+
+
+```
+
+
+
+### Global correlation
+```{r}
+tmp <- cbind("ChIP"=as.vector(as.matrix(TL_ChIP)), "RNA"=as.vector(as.matrix(TL_RNA)))
+print(glob_cor <- cor(tmp, method = "spearman")[1,2])
+rm(tmp)
+```
+
+
+### Per-gene correlation vs mean expression
+```{r fig.width=3.5, fig.height=3.5}
+library(ggplot2)
+ggplot(
+  subset(res_table, bOscMeeuse20 & !is.na(corr)), 
+  aes_string(x="mean_expr", y="corr")) +
+  ylim(c(-1, 1)) +
+  geom_hline(yintercept = c(-1, 0, 1), color="grey50") +
+  geom_hline(yintercept = glob_cor, color="blue", lty="dashed")  +
+  geom_point(aes_string(color="mean_chip"), size=0.35) +
+  geom_smooth(method="loess", formula=y~x, se=F) +
+  ggtitle(paste(sum(res_table$bOscMeeuse20 & !is.na(res_table$corr)), "osc genes (w/ corr)")) +
+  theme_bw()
+ggsave(
+  filename = "osc-genes_corr_vs_mean-expr.pdf", path = file.path(".","OUTPUT"),
+  device = "pdf", width = 3.5, height = 3, units="in")
+ggsave(
+  filename = "osc-genes_corr_vs_mean-expr.pdf", path = file.path("..","PAPER"),
+  device = "pdf", width = 4.5, height = 3.5, units="in")
+```
+
+```{r fig.width=4, fig.height=4}
+smoothScatter(
+  res_table[,c("mean_expr", "corr")],
+  nbin = 512, nrpoints = 0,
+  colramp = colorRampPalette(c(
+    "white","lightgrey","darkgrey","darkblue","blue","purple","magenta","white")) 
+)
+points(
+  subset(res_table, bOscMeeuse20)[,c("mean_expr", "corr")],
+  pch=21, bg=NA, col="red", cex=0.5)
+```
+
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Finish
+
+### Write table to file
+```{r}
+res_table2 <- res_table
+for (vn in c("mean_expr","CV_expr", "mean_chip", "CV_chip", "oscAmpl", "oscPhase", "corr")) {
+  res_table2[,vn] <- round(res_table2[,vn], 5)
+}
+for (vn in c("bExpressed","bOccupied", "bOscMeeuse20")) {
+  res_table2[,vn] <- 1*(res_table2[,vn])
+}
+write.table(
+  tibble::rownames_to_column(res_table2, "WBGID"), 
+  file = file.path("..","PAPER", "Expression_PromoterOccupancy_correlations.tsv"), 
+  sep = "\t", row.names = F, col.names = T, quote=F )
+rm(vn, res_table2)
+```
+
+
+### Clean up
+```{r}
+# rm(res_table, 
+#    behav_chip, behav_rna,
+#    align_stats_ChIP, align_stats_RNA,
+#    TL_MC_ChIP_osc, TL_MC_RNA_osc)
+# gc()
+```
+
+
+
+
+<!-- ======================================================================= -->
+# Finalise
+
+
+<!-- ----------------------------------------------------------------------- -->
+## Session Info
+
+```{r}
+cat("Compiled on",date(),"by",Sys.getenv("USER"),":\n")
+sessionInfo()
+```
+
+
+
+
+<!-- EOF -->
