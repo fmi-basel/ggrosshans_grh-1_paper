@@ -7,32 +7,33 @@ Things that need code in GitHub
 -------------------------------
 
 * RNAPII mRNA-seq & ChIP-seq experiment:
-- processing: RNAPII to promoter counts
-- processing: mRNA to gene counts
-- analysis: osc promoter calling 
+- processing: RNAPII to promoter counts [DONE]
+- processing: mRNA to gene counts [DONE]
 => Fig 1A: heatmap
-- analysis: corr bw RNAPII ChIP-seq & mRNA-seq
+- analysis: corr bw RNAPII ChIP-seq & mRNA-seq [DONE]
 => Fig X
 
 * GRH-1 ChIP-seq
-- processing: peaks, motifs 
+- processing: peaks, motifs [DONE]
 => Fig X: motif, frac BS/P w/ P/BS
-- analysis: osc, then phase enrichment analysis
+- analysis: osc, then phase enrichment analysis [DONE]
 => Fig X
 
 
 Additionally
 ------------
 
-* Write into README
-* Luciferase Assay Analyser repos
- 
+* Write into README [IN PROGRESS]
+* Clean up code [   ]
+* Luciferase Assay Analyser repos [   ]
+* CNN repos? [MARIT]
+
 
 Not GitHub-related
 ------------------
 
-* GEO submission
-* Carl Sara contributed to the early RNAPII bioinfo analyses
+* GEO submission [1st try DONE]
+* Carl Sara contributed to the early RNAPII bioinfo analyses [ACKNOWLEDGED]
 
 
 # EOF
