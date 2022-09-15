@@ -12,31 +12,7 @@ output:
 
 
 <!-- ======================================================================= -->
-# Blurbs from Milou
-
-Fused from her work on 2587R and 2633R.
-
-Alignment of ChIPseq reads to ce10 _C.elegans_ genome
-
-
-<!-- ----------------------------------------------------------------------- -->
-## SCRIPT DESCRIPTION
-Analysis was performed by: Milou Meeuse
-
-This code allows the user to align the ChIPseq reads to the C.elegans genome using QuasR
-
-This script consists of the following steps: 
-  (1) convert samples.tsv generated with ggrosshans_gnomex_fmi (fmi-basel github) 
-  on GNomEX (intranet) to samples.txt which is compatible with QuasR::qAlign
-  (2) align reads to genome
-  (3) quality control of sequencing reads and alignment
-  (4) make BigWig files
-  (5) save <proj> in an environment (needed to run follow-up scripts)
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## EXPERIMENT DESCRIPTION
+# Experimet notes
 
 Experiment was performed by: Kathrin Braun
 Experiment identifiers in GNomEx: 2587R & 2633R
@@ -77,43 +53,9 @@ suggesting the amount of DNA present originally in the IP samples was extremely 
 
 
 
-<!-- ----------------------------------------------------------------------- -->
-## REFERENCES
-https://bioconductor.org/packages/devel/bioc/vignettes/QuasR/inst/doc/QuasR.html
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## INPUT
-
-(for each Sequencing Experiment Run)
-- overview of samples: samples.tsv 
-- sequencing reads: fastq.gz files
-- reference genome: BSgenome.Celegans.UCSC.ce10
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## OUTPUT
-
-- samples.txt
-- bam files
-- QCreport
-- BigWig files
-- project information
-- alignment stats
-
-
-
 
 <!-- ======================================================================= -->
 # Set Up
-
-```{r}
-getwd()
-# setwd("/tungstenfs/scratch/ggrossha/smitalex/RProjects/group/GRH-1")
-```
-
 
 
 <!-- ----------------------------------------------------------------------- -->

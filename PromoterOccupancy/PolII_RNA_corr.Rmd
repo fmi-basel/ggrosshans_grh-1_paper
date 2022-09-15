@@ -1,5 +1,5 @@
 ---
-title: "GRH-1 pol-II ChIP-seq stuff"
+title: "Integrating RNA pol-II promoter occupancy and mRNA expression data"
 author: Milou MEEUSE, A. Alex T. SMITH
 date: 01/06/2022
 output: 
@@ -12,16 +12,6 @@ output:
 Get pol-II ChIP-seq TC data & RNA-seq TC data,
 build heatmap for both,
 calculate correlations bw TCs.
-
-
-
-CF https://github.com/fmi-basel/ggrosshans_blmp1_paper/blob/master/RNAPII/2020-05-18%20Analysis_ExprHeatmaps/2020-05-18%20Analysis_RNAseq_ChIPseq.R
-
-<!-- Notes on Dimos' matrix naming:
-TL: log-transformed
-E: restricted to "expressed"
-D: "differential", as in mean-centered -->
-
 
 
 

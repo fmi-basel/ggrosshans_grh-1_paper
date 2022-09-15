@@ -9,10 +9,6 @@ output:
 ---
 
 
-C.F. Milou's script:
-/tungstenfs/scratch/ggrossha/meeumilo/scripts/TF ChIP/ChIPseq2633_grh-1_hbl-1/2020-12-04 AssignPeaksToGenes/2020-12-04 2633R_AssignPeaksToGenes.R
-
-
 
 
 <!-- ======================================================================= -->

@@ -12,43 +12,6 @@ output:
 
 
 <!-- ======================================================================= -->
-# Original blurb extract from Milou
-
-<!-- ----------------------------------------------------------------------- -->
-## SCRIPT DESCRIPTION
-Analysis was performed by: Milou Meeuse
-
-This code allows the user to assign the peaks identified by MACS2 to genes
-
-This script consists of the following steps: 
-  (1) load the exon data for ce10
-  (2) parse & filter it
-  (3) extract gene body and gene promoter regions
-
-Dimos notes: promoter regions are defined in varying ways, 
-eg -500 to 1000, or 0 to 2000 ... here, -500 to 0 is very strict.
-
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## INPUT
-
-- exons GR
-- gene models
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## OUTPUT
-
-- gene promoter, gene body and gene promoter+genebody annotations 
-(bed files, RData).
-
-
-
-
-<!-- ======================================================================= -->
 # Set Up
 
 

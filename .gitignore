@@ -3,3 +3,4 @@ Plots/
 .Rproj.user
 *.Rproj
 TODO.txt
+*/*.html

@@ -19,19 +19,7 @@ output:
 ## Support libraries
 This script requires the following packages to be installed:
 ```{r}
-# reference_genome <- "BSgenome.Celegans.UCSC.ce10"
-# library(reference_genome, character.only = T)
-
 library(rtracklayer)
-# library(universalmotif)
-# library(monaLisa)
-# library(TFBSTools)
-
-# library(NMF)
-# library(ggplot2)
-# library(gridExtra)
-
-# source(file.path(".","support_GR.R"))
 source("./support_assignment.R")
 ```
 

@@ -12,55 +12,6 @@ output:
 
 
 <!-- ======================================================================= -->
-# Original blurb from Milou
-
-Determine enriched tiles 
-
-
-<!-- ----------------------------------------------------------------------- -->
-## SCRIPT DESCRIPTION
-Analysis was performed by: Milou Meeuse
-
-This code allows the user to process the ChIP-seq reads
-
-This script consists of the following steps: 
-  (1) Prepare normalized read counts in tiles
-  (2) Make selection of enriched tiles
-  (3) investigate genome accessibility of enriched tiles
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## EXPERIMENT DESCRIPTION
-CF previous script
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## REFERENCES
-https://bioconductor.org/packages/devel/bioc/vignettes/QuasR/inst/doc/QuasR.html
-ATAC-seq: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6231769/
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## INPUT
-
-- normalized read counts
-- 500 bp tiles
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## OUTPUT
-
-- enriched tiles
-- atac-score in enriched tiles
-
-
-
-
-<!-- ======================================================================= -->
 # Set Up
 
 
@@ -81,7 +32,6 @@ library(gridExtra)
 ```{r}
 load( file.path(".","RDATA","2587R-2633R_projs.RData") )
 ```
-
 
 
 
@@ -467,63 +417,6 @@ for (conc in colnames(windows.norm)[2:4]) {
 rm(conc, pal)
 ```
 => Good consistency: enriched and highly enriched look like they would be called as such at lower concentrations too.
-
-
-
-
-<!-- ======================================================================= -->
-# Integrate with ATAC-seq
-
-Publicly-available ATAC-seq data from Jaenes, et al 2018 PMID:30362940.
-
-### Load ATAC-seq data
-From one of Milou's other analyses.
-```{r}
-fn <- "2020-09-15 ATACscore_500bpTiles_WT_L2.csv"
-if (!file.exists( file.path(".","DATA",fn) )) {
-  file.copy( 
-    file.path(
-      "/tungstenfs","scratch","ggrossha","meeumilo","scripts","ATACseq",
-      "Jaenes2018","ATACscore",
-      fn),
-    file.path(".","DATA",fn)  )
-}
-
-atac.score.l2 <- read.csv(
-  file.path(".","DATA",fn) , 
-  row.names = 1)
-windows.FE[,"atac"] <-
-  log2(atac.score.l2+16) # assuming this data has same tiles (?)
-
-rm(atac.score.l2)
-```
-
-
-### Integrate with ChIP-seq
-```{r fig.width=5, fig.height=4}
-ok <- (! windows.FE$assignment %in% c("overmapped", "too lowly expressed" ))
-
-ggplot(windows.FE[ok,], aes(x=input, y=ChIP, col=atac)) + 
-  geom_abline(intercept=0, slope=1, col="darkgrey") + 
-  geom_point(size=0.05, alpha=0.5) +
-  scale_color_gradient(low="blue", high="red") + theme_classic()
-ggplot(windows.FE[ok,], aes(x=mean, y=FE, col=atac)) + 
-  geom_hline(yintercept=0, col="darkgrey") +
-  geom_point(size=0.05, alpha=0.5) +
-  scale_color_gradient(low="blue", high="red") + theme_classic()
-ggplot(windows.FE[ok,], aes(x=atac, y=FE, col=assignment)) + 
-  geom_hline(yintercept=0, col="darkgrey") +
-  geom_point(size=0.2, alpha=0.5) +
-  theme_classic()
-
-rm(ok)
-```
-
-=> Milou said:
-
--	ATAC-seq score increases with increasing read counts in the background of ChIP and corresponding ATAC-seq samples. This is what we would expect, as very dense chromatin is difficult to get ChIP-seq reads from. 
--	Selected tiles (from Figure 1), are enriched for higher ATACscore, i.e. more accessible chromatin. We indeed expect TF to bind to open chromatin.
--	In the background signal there is a trend towards more accessible chromatin for enriched read counts that are at the higher end of the background. Note the lower left to higher right trend. Hence, we may overestimate the selection of tiles with high ATAC-score, and underestimate the selection of tiles with low ATAC-score. However, there are very few tiles with enriched read counts in the latter in general. The former can be addressed by making a more stringent cut-off.
 
 
 

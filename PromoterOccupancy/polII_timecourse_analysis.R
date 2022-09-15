@@ -1,11 +1,18 @@
+# RNA pol-II ChIP-seq promoter occupancy TC analysis
+# (initially written by Sarah H.Carl; cut & slightly edited for brevity - AATS 13/09/2022)
+
+
+# set up
 setwd("/work/gbioinfo/carlsara/grosshans/milou/polII_timecourse/")
 library(QuasR)
 library("BSgenome.Celegans.UCSC.ce10")
 library(preprocessCore)
 
+
 # initiate project
 clObj <- makeCluster(20)
 proj <- qAlign("samples.txt", "BSgenome.Celegans.UCSC.ce10", alignmentsDir="bam", clObj=clObj)
+
 
 # Define TSS regions: +- 500b around TSS
 exons <- read.delim("/work/gbioinfo/DB/WormBase/WS220/c_elegans.WS220.exons.tab", header=T, sep="\t", as.is=T)
@@ -30,15 +37,17 @@ start(tss) <- ifelse(strand(tss)=="+", start(tss), end(tss))
 end(tss) <- start(tss)
 tss_500 <- tss + 500
 
+
 # Quantify
 tss_500_counts <- qCount(proj, tss_500, clObj=clObj)
+
 
 # Try quantile norm
 edata = log2(tss_500_counts[,-1] + 8)
 edata = edata[rowMeans(edata) > 3, ]
 norm_edata = normalize.quantiles(as.matrix(edata[,13:24]))
-# ==> final object: norm_edata
+# ==> final object to export for further use: norm_edata
 
-# (initially written by Sarah H.Carl; cut & slightly edited for brevity - AATS 13/09/2022)
+
 
 # EOF

@@ -12,54 +12,6 @@ output:
 
 
 <!-- ======================================================================= -->
-# Original extract from Milou
-
-Prepare data from MACS2 peaks
-
-
-<!-- ----------------------------------------------------------------------- -->
-## SCRIPT DESCRIPTION
-Analysis was performed by: Milou Meeuse
-
-This code allows the user to assign the peaks identified by MACS2 to genes
-
-This script consists of the following steps: 
-  (0) load the proj object in the environment
-  (1) load & prepare MACS2 data
-  <!-- (5) heatmaps of ChIP signal across genes -->
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## EXPERIMENT DESCRIPTION
-CF previous script
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## REFERENCES
-https://github.com/hbctraining/Intro-to-ChIPseq/blob/master/lessons/05_peak_calling_macs.md
-https://bioconductor.org/packages/devel/bioc/vignettes/QuasR/inst/doc/QuasR.html
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## INPUT
-
-- previous proj objects for 2587R and 2633R
-- narrow peak files from MACS2
-
-
-
-<!-- ----------------------------------------------------------------------- -->
-## OUTPUT
-
-- QuasR-derived enrichments for peaks combined from both replicates
-
-
-
-
-<!-- ======================================================================= -->
 # Set Up
 
 ```{css}
@@ -154,16 +106,6 @@ macs2 callpeak \
   -m 2 50 \
   2> ${run_name}.err ; 
   
-run_name="2587R_500mM_summits"
-macs2 callpeak \
-  -t ${bam_dir}/ChIP_500mM_2587F3_dddf390302e8.bam \
-  -c ${bam_dir}/input_2587F1_dddf3f094d00.bam \
-  -n ${run_name} \
-  -g ce \
-  -m 2 50 \
-  --call-summits \
-  2> ${run_name}.err ; 
-  
 run_name="2587R_1M"
 macs2 callpeak \
   -t ${bam_dir}/ChIP_1M_2587F4_dddf1b4f3c7d.bam \
@@ -238,37 +180,12 @@ rm(to_rm)
 
 
 
-### Optional: extract narrowPeak file for summits
-If you ran MACS2 with option --call-summits, the output file format is confusing.
-You can use this code to extract a narrowPeak file with a row for each summit specifically,
-using a fixed width around each summit as a simplification:
-
-::: {bash}
-cat 2587R_500mM_summits_peaks.narrowPeak | \
-  awk 'BEGIN{FS="\t"} { print $1 FS $2+$10-50 FS $2+$10+50 FS $4 FS $5 FS $6 FS $7 FS $8 FS $9 FS $10}' \
-  > 2587R_500mM_summits.narrowPeak
-:::
-
-If you want to load that original narrowPeak file into R, you'll have to parse it differently,
-reducing it to one entry per peak (not sure how you'd handle the sub-peak-level data),
-or treat things at the sub-peak level (not sure how you'd handle the sub-peak regions
-all being equal).
-
-Note: Alex 19/08/2022: Many peaks have multiple clusters of predicted binding sites
-using the top predicted motif using the general peak data. Looking at these "sub-peaks" in IGV,
-very often the 100bp window around the peak or sub-peak summits is not enough to capture
-the predicted sites, and many sites are entirely missed (often bc they lie within 
-the "shoulder" of a highly-enriched subpeak and are thus missed as sub-peaks by MACS2).
-I conclude that we cannot rely on MACS2 sub-peaks nor summits to derive more precise motifs.
-
-
 ### List MACS2 runs
 ```{r}
 macs2_run_names <- c(
   "2587R_350mM",
   "2587R_500mM",
   "2587R_1M",
-  # dropping sub-peaks
   "2587R_combo",
   "2633R_old",
   "2633R_new"

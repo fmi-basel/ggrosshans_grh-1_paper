@@ -24,7 +24,7 @@ Additionally
 ------------
 
 * Write into README [IN PROGRESS]
-* Clean up code [   ]
+* Clean up code [DONE]
 * Luciferase Assay Analyser repos [   ]
 * CNN repos? [MARIT]
 

@@ -678,9 +678,6 @@ rm(sel_motif_name, freqtab)
 <!-- ======================================================================= -->
 # Integrate motif occurrences and peaks
 
-<!-- NOTE: could just establish CPDs once and for
-all rather than recalc each time -->
-
 
 <!-- ----------------------------------------------------------------------- -->
 ## Profile around binding sites, split by peak/no peak
