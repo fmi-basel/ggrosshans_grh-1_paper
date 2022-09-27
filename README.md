@@ -79,6 +79,11 @@ This script takes site-peak-gene assignments generated above, derives various de
 - there is evidence of enrichment in particular phases amongst oscillatory putative GRH-1 targets
 
 
-
+<!-- ----------------------------------------------------------------------- -->
+## Segmentation model for image analysis
+This CNN model is used to segment worms from brightfield images. The model can be called using the workflows from the publicly available repository:
+- https://github.com/fmi-basel/ggrosshans-jobsystem-workflows
+Instructions given there can be followed for correct installation.
+Note:  the path written in the ./fetch_data_and_models.sh need to be updated to your local path where this repository is saved.
 
 <!-- EOF -->
