@@ -1,0 +1,1 @@
+ManualModelDeploymentTask(export_folder=training-v03-001/deployed-v2/, with_mixed_precision=True, model_folder=training-v03-001/models/unet-L4-W1-wbce-bgsub-320x320/3a4aeff35b83fde3822ce319/, model_weights=model_latest.h5, with_tta=True, with_bg_subtraction=True)

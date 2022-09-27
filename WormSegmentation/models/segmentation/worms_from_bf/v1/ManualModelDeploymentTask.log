@@ -1,0 +1,1 @@
+ManualModelDeploymentTask(export_folder=training-v2-clean/deployed/, model_folder=training-v2-clean/models/unet-L4-W1-wbce-320x320/2f55f5669038e3581af8cc92/, model_weights=model_latest.h5)
