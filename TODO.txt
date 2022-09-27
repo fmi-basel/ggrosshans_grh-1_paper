@@ -17,8 +17,10 @@ Things that need code in GitHub
 * Phase Enrichment Analyses
 - analysis: osc, then phase enrichment analysis [DONE]
 
+* WormSegmentation
+- files for model & test [DONE]
 
-All need a final update before submission! [   ]
+All need a final check/update before submission! [   ]
 
 
 
