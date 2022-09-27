@@ -1,6 +1,6 @@
 # Repository of analysis scripts for the Grosshans 2022 paper on GRH-1
 
-Repo assembled by AATS from own work & previous work by MWMM & SHC over the past few years.
+Repo assembled by AATS and MvdD from own work & previous work by MWMM & SHC over the past few years.
 
 Code is provided _as is_ as supporting material. R version was 4.2.1 (2022-06-23) unless otherwise indicated.
 
@@ -8,6 +8,7 @@ Main sections:
 - GRH-1 ChIP-seq processing
 - promoter occupancy (RNA-polII ChIP-seq & mRNA-seq timecourse)
 - phase enrichment analysis amongst putative GRH-1 targets
+- segmentation model for image analysis
 
 
 
@@ -79,12 +80,19 @@ This script takes site-peak-gene assignments generated above, derives various de
 - there is evidence of enrichment in particular phases amongst oscillatory putative GRH-1 targets
 
 
+
 <!-- ----------------------------------------------------------------------- -->
 ## Segmentation model for image analysis
-This CNN model is used to segment worms from brightfield images. The model can be called using the workflows from the publicly available repository:
-- https://github.com/fmi-basel/ggrosshans-jobsystem-workflows
 
+This CNN model is used to segment worms from brightfield images.
+
+The model can then be called using the workflows from the publicly available repository:   
+[ggrosshans-jobsystem-workflows](https://github.com/fmi-basel/ggrosshans-jobsystem-workflows).
 Instructions given there can be followed for correct installation.
-Note:  the path written in the ./fetch_data_and_models.sh need to be updated to your local path where this repository is saved.
+
+Note: the path written in the ./fetch_data_and_models.sh need to be updated to your local path where this repository is saved.
+
+
+
 
 <!-- EOF -->
